@@ -1,10 +1,17 @@
 """Seller revenue integration tests — require seeded database.
 
-Tests that seller gross sales use order_items.price * order_items.qty
-(line-item revenue), not orders.total, and that distinct orders are
-counted correctly when an order contains items from multiple sellers.
+These tests verify that seller gross sales use order_items.price * order_items.qty
+(line-item revenue), not orders.total, and that distinct orders are counted
+correctly when an order contains items from multiple sellers.
+
+Each test creates uniquely named seller records so pre-existing seeded orders
+cannot contaminate its metrics. Test orders, linked events, transactions, and
+seller records are removed during fixture teardown.
 """
 
+import uuid
+
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -14,19 +21,24 @@ from app.core.db import db_cursor
 client = TestClient(app)
 
 
-def _cleanup_test_orders():
-    """Remove all test orders and their items."""
+def _new_order_id() -> str:
+    return f"test-order-{uuid.uuid4().hex}"
+
+
+def _create_test_seller(scope: dict) -> str:
+    """Create an isolated seller record for a revenue test."""
+    seller_id = f"pytest-seller-{uuid.uuid4().hex}"
     with db_cursor(commit=True) as cur:
         cur.execute(
-            "DELETE FROM order_items WHERE order_id LIKE 'test-order-%'"
+            "INSERT INTO sellers (id, name) VALUES (%s, %s)",
+            (seller_id, f"Revenue Test Seller {seller_id[-8:]}"),
         )
-        cur.execute(
-            "DELETE FROM orders WHERE id LIKE 'test-order-%'"
-        )
+    scope["seller_ids"].append(seller_id)
+    return seller_id
 
 
-def _insert_test_order(order_id, user_id, status, items):
-    """Insert an order with line items for revenue testing.
+def _insert_test_order(order_id: str, user_id: str, status: str, items: list[tuple]):
+    """Insert an order with line items.
 
     items: list of (sku, seller_id, price, qty) tuples.
     """
@@ -37,8 +49,7 @@ def _insert_test_order(order_id, user_id, status, items):
                                 subtotal, discount, shipping, total, placed_at)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now())
             """,
-            (order_id, user_id, "Test Customer", status, "card",
-             0, 0, 0, 0),
+            (order_id, user_id, "Test Customer", status, "card", 0, 0, 0, 0),
         )
         for sku, seller_id, price, qty in items:
             cur.execute(
@@ -50,112 +61,173 @@ def _insert_test_order(order_id, user_id, status, items):
             )
 
 
-def test_mixed_seller_order_revenue_is_line_item_based():
-    """An order with items from two sellers must attribute revenue per seller.
+def _cleanup_test_orders(order_ids: list[str]) -> None:
+    """Delete only the explicitly supplied test orders and related records."""
+    if not order_ids:
+        return
 
-    Order: items from seller-1 and seller-2.
-    - seller-1: VLR-1001, price=1500, qty=1 -> line-item revenue = 1500
-    - seller-2: VLR-1002, price=800, qty=2 -> line-item revenue = 1600
-    Order total would be 3100, but each seller only gets their line items.
+    order_reasons = [f"Sale · order {order_id}" for order_id in order_ids]
+    with db_cursor(commit=True) as cur:
+        cur.execute(
+            "DELETE FROM bundle_acceptance_events WHERE order_id = ANY(%s)",
+            (order_ids,),
+        )
+        cur.execute(
+            "DELETE FROM inventory_transactions WHERE reason = ANY(%s)",
+            (order_reasons,),
+        )
+        cur.execute(
+            "DELETE FROM order_items WHERE order_id = ANY(%s)",
+            (order_ids,),
+        )
+        cur.execute(
+            "DELETE FROM orders WHERE id = ANY(%s)",
+            (order_ids,),
+        )
+
+
+def _cleanup_test_sellers(seller_ids: list[str]) -> None:
+    """Delete only the temporary seller records created by this test scope."""
+    if not seller_ids:
+        return
+
+    with db_cursor(commit=True) as cur:
+        cur.execute(
+            "DELETE FROM sellers WHERE id = ANY(%s)",
+            (seller_ids,),
+        )
+
+
+@pytest.fixture
+def revenue_test_scope():
+    """Track isolated test data and always remove it after each test."""
+    scope = {"order_ids": [], "seller_ids": []}
+    try:
+        yield scope
+    finally:
+        # Seller rows are referenced by order_items, so order cleanup must be
+        # attempted first. Still attempt seller cleanup if order cleanup fails.
+        try:
+            _cleanup_test_orders(scope["order_ids"])
+        finally:
+            _cleanup_test_sellers(scope["seller_ids"])
+
+
+def _insert_scoped_order(scope: dict, user_id: str, status: str, items: list[tuple]) -> str:
+    order_id = _new_order_id()
+    # Register before the insert so teardown also handles a partially completed
+    # insert transaction if the helper raises.
+    scope["order_ids"].append(order_id)
+    _insert_test_order(order_id, user_id, status, items)
+    return order_id
+
+
+def test_mixed_seller_order_revenue_is_line_item_based(revenue_test_scope):
+    """An order with items from two sellers attributes only each seller's lines.
+
+    seller A: VLR-1001, ₹1500 x 1 = ₹1500.
+    seller B: VLR-1002, ₹800 x 2 = ₹1600.
+    The order total is irrelevant to seller-specific revenue.
     """
-    _cleanup_test_orders()
-    _insert_test_order(
-        "test-order-mixed-1",
-        "user-test-1",
+    seller_a = _create_test_seller(revenue_test_scope)
+    seller_b = _create_test_seller(revenue_test_scope)
+    _insert_scoped_order(
+        revenue_test_scope,
+        "user-test-mixed",
         "Delivered",
         [
-            ("VLR-1001", "seller-1", 1500.00, 1),
-            ("VLR-1002", "seller-2", 800.00, 2),
+            ("VLR-1001", seller_a, 1500.00, 1),
+            ("VLR-1002", seller_b, 800.00, 2),
         ],
     )
 
-    resp_1 = client.get("/api/v1/seller/seller-1/metrics")
-    resp_2 = client.get("/api/v1/seller/seller-2/metrics")
-    assert resp_1.status_code == 200
-    assert resp_2.status_code == 200
+    resp_a = client.get(f"/api/v1/seller/{seller_a}/metrics")
+    resp_b = client.get(f"/api/v1/seller/{seller_b}/metrics")
+    assert resp_a.status_code == 200
+    assert resp_b.status_code == 200
 
-    data_1 = resp_1.json()
-    data_2 = resp_2.json()
+    data_a = resp_a.json()
+    data_b = resp_b.json()
 
-    # Seller-1 revenue must be 1500 (line item), not 3100 (order total)
-    assert data_1["gross_sales"] == 1500.0, f"seller-1 gross_sales: {data_1['gross_sales']}"
-    # Seller-2 revenue must be 1600 (line item), not 3100 (order total)
-    assert data_2["gross_sales"] == 1600.0, f"seller-2 gross_sales: {data_2['gross_sales']}"
-    # Each seller has 1 distinct order
-    assert data_1["orders"] == 1
-    assert data_2["orders"] == 1
-    # Delivered sales match gross sales for delivered orders
-    assert data_1["delivered_sales"] == 1500.0
-    assert data_2["delivered_sales"] == 1600.0
+    assert data_a["gross_sales"] == 1500.0, f"seller A gross_sales: {data_a['gross_sales']}"
+    assert data_b["gross_sales"] == 1600.0, f"seller B gross_sales: {data_b['gross_sales']}"
+    assert data_a["orders"] == 1
+    assert data_b["orders"] == 1
+    assert data_a["delivered_sales"] == 1500.0
+    assert data_b["delivered_sales"] == 1600.0
 
 
-def test_distinct_order_count_with_multiple_items_same_seller():
-    """An order with two items from the same seller counts as one distinct order."""
-    _cleanup_test_orders()
-    _insert_test_order(
-        "test-order-multi-same-seller",
-        "user-test-2",
+def test_distinct_order_count_with_multiple_items_same_seller(revenue_test_scope):
+    """Two line items from one seller in one order count as one order."""
+    seller_id = _create_test_seller(revenue_test_scope)
+    _insert_scoped_order(
+        revenue_test_scope,
+        "user-test-multiple-lines",
         "Delivered",
         [
-            ("VLR-1001", "seller-1", 1000.00, 1),
-            ("VLR-1003", "seller-1", 500.00, 2),
+            ("VLR-1001", seller_id, 1000.00, 1),
+            ("VLR-1003", seller_id, 500.00, 2),
         ],
     )
 
-    resp = client.get("/api/v1/seller/seller-1/metrics")
+    resp = client.get(f"/api/v1/seller/{seller_id}/metrics")
     assert resp.status_code == 200
     data = resp.json()
-    # Two line items but one distinct order
     assert data["orders"] == 1
-    # Revenue = 1000*1 + 500*2 = 2000
     assert data["gross_sales"] == 2000.0
 
 
-def test_cancelled_order_excluded_from_gross_sales():
-    """Cancelled orders must not contribute to gross sales."""
-    _cleanup_test_orders()
-    _insert_test_order(
-        "test-order-cancelled",
-        "user-test-3",
+def test_cancelled_order_excluded_from_gross_sales(revenue_test_scope):
+    """Cancelled orders do not contribute to gross sales."""
+    seller_id = _create_test_seller(revenue_test_scope)
+    _insert_scoped_order(
+        revenue_test_scope,
+        "user-test-cancelled",
         "Cancelled",
-        [
-            ("VLR-1001", "seller-1", 1000.00, 1),
-        ],
+        [("VLR-1001", seller_id, 1000.00, 1)],
     )
 
-    resp = client.get("/api/v1/seller/seller-1/metrics")
+    resp = client.get(f"/api/v1/seller/{seller_id}/metrics")
     assert resp.status_code == 200
     data = resp.json()
-    # Cancelled order excluded from gross sales
     assert data["gross_sales"] == 0.0
 
 
-def test_returned_order_tracked_as_refunds():
-    """Returned orders are tracked separately as refunds but still count in gross sales.
-
-    Gross sales includes all non-cancelled orders (the sale happened).
-    Refunds tracks the returned portion separately. Net sales would be
-    gross_sales - refunds.
-    """
-    _cleanup_test_orders()
-    _insert_test_order(
-        "test-order-returned",
-        "user-test-4",
+def test_returned_order_tracked_as_refunds(revenue_test_scope):
+    """Returned sales remain in gross sales and are separately counted as refunds."""
+    seller_id = _create_test_seller(revenue_test_scope)
+    _insert_scoped_order(
+        revenue_test_scope,
+        "user-test-returned",
         "Returned",
-        [
-            ("VLR-1001", "seller-1", 1000.00, 1),
-        ],
+        [("VLR-1001", seller_id, 1000.00, 1)],
     )
 
-    resp = client.get("/api/v1/seller/seller-1/metrics")
+    resp = client.get(f"/api/v1/seller/{seller_id}/metrics")
     assert resp.status_code == 200
     data = resp.json()
-    # Returned order is included in gross sales (the sale happened)
     assert data["gross_sales"] == 1000.0
-    # And tracked separately as refunds
     assert data["refunds"] == 1000.0
 
 
 def test_cleanup_test_orders():
-    """Remove test orders inserted by previous tests."""
-    _cleanup_test_orders()
+    """The scoped cleanup helper removes only the supplied test order."""
+    order_id = _new_order_id()
+    seller_scope = {"seller_ids": []}
+    seller_id = _create_test_seller(seller_scope)
+    try:
+        _insert_test_order(
+            order_id,
+            "user-test-cleanup",
+            "Delivered",
+            [("VLR-1001", seller_id, 1000.00, 1)],
+        )
+        _cleanup_test_orders([order_id])
+        with db_cursor() as cur:
+            cur.execute("SELECT COUNT(*)::INTEGER AS n FROM orders WHERE id = %s", (order_id,))
+            assert cur.fetchone()["n"] == 0
+            cur.execute("SELECT COUNT(*)::INTEGER AS n FROM order_items WHERE order_id = %s", (order_id,))
+            assert cur.fetchone()["n"] == 0
+    finally:
+        _cleanup_test_orders([order_id])
+        _cleanup_test_sellers(seller_scope["seller_ids"])
