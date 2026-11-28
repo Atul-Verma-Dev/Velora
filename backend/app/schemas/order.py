@@ -69,3 +69,4 @@ class OrderOut(BaseModel):
     address: str
     contact: str
     tracking: list
+    items: list[OrderItemOut] = []

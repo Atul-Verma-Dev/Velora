@@ -17,11 +17,11 @@ from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import APIRouter, HTTPException
-from pydantic import Field
 
 from app.core.db import db_cursor
 from app.core.config import get_settings
 from app.schemas.order import OrderIn, OrderOut, OrderItemOut
+from app.services.pricing import compute_offer, deep_tier_gate_met
 
 router = APIRouter()
 
@@ -42,7 +42,7 @@ def _now_iso() -> str:
 
 
 def _money(value) -> Decimal:
-    """Round to 2 decimal places using banker's rounding for consistency."""
+    """Round to 2 decimal places using half-up rounding for consistency."""
     return Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
@@ -146,7 +146,16 @@ def place_order(order: OrderIn):
         # Validate Complete the Look offer references.
         offer_price_by_key: dict[tuple[str, str], Decimal] = {}
         used_recommendation_ids: set[int] = set()
+        used_candidate_keys: set[tuple[str, str]] = set()
+        ctl_tier_60_keys: set[tuple[str, str]] = set()
         order_base_skus: set[str] = {sku for sku, _ in sorted_keys}
+
+        # Pricing config for CTL revalidation.
+        ctl_config = {
+            "default_marginal_shipping": settings.default_marginal_shipping,
+            "offers_enabled": settings.offers_enabled,
+            "deep_bundle_gate": settings.deep_bundle_gate,
+        }
 
         for ref in order.offer_references:
             # Reject duplicate recommendation references.
@@ -228,8 +237,39 @@ def place_order(order: OrderIn):
                     status_code=409,
                     detail=f"Candidate product {rec['sku']} size {rec['size']} not in order inventory",
                 )
-            # Use database-authoritative price, never the client-supplied offer_price.
+            # Prevent duplicate candidate keys across CTL references.
+            if candidate_key in used_candidate_keys:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Candidate {rec['sku']} size {rec['size']} referenced multiple times in CTL offers",
+                )
+            used_candidate_keys.add(candidate_key)
+            # CTL items must be exactly 1 unit.
+            if aggregated.get(candidate_key, 0) != 1:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"CTL candidate {rec['sku']} size {rec['size']} must have qty=1, got {aggregated.get(candidate_key, 0)}",
+                )
+            # Revalidate CTL eligibility and pricing using the pricing engine.
+            candidate_product = dict(candidate)
+            offer = compute_offer(candidate_product, ctl_config)
+            if not offer["eligible"]:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"CTL candidate {rec['sku']} is no longer offer-eligible: {offer['explanation']}",
+                )
+            # Validate the database price matches the computed offer price.
+            computed_price = Decimal(str(offer["final_price"]))
             db_price = Decimal(str(rec["price"]))
+            if computed_price != db_price:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"CTL price {db_price} does not match computed offer price {computed_price} for {rec['sku']}",
+                )
+            # Track 60% tier items for deep bundle gate check.
+            if offer["tier"]["discount"] >= 0.60:
+                ctl_tier_60_keys.add(candidate_key)
+            # Use database-authoritative price, never the client-supplied offer_price.
             offer_price_by_key[candidate_key] = db_price
 
         # Calculate subtotal from database prices (never trust client subtotal).
@@ -242,6 +282,13 @@ def place_order(order: OrderIn):
             line_prices[(sku, size)] = unit_price
             subtotal += unit_price * qty
         subtotal = _money(subtotal)
+
+        # Deep bundle gate: 60% CTL tier requires cart subtotal >= gate.
+        if ctl_tier_60_keys and not deep_tier_gate_met(float(subtotal), int(settings.deep_bundle_gate)):
+            raise HTTPException(
+                status_code=409,
+                detail=f"60% CTL tier requires cart subtotal >= ₹{settings.deep_bundle_gate}",
+            )
 
         # Calculate shipping and discount server-side.
         shipping = _server_shipping(order.delivery, subtotal)
@@ -307,12 +354,21 @@ def place_order(order: OrderIn):
             )
             qty_by_sku[sku] = qty_by_sku.get(sku, 0) + qty
 
-        # Decrement total product stock.
+        # Decrement total product stock with concurrency guard.
         for sku, total_qty in qty_by_sku.items():
             cur.execute(
-                "UPDATE products SET stock = stock - %s WHERE sku = %s",
-                (total_qty, sku),
+                """
+                UPDATE products
+                SET stock = stock - %s
+                WHERE sku = %s AND stock >= %s
+                """,
+                (total_qty, sku, total_qty),
             )
+            if cur.rowcount == 0:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Insufficient stock for {sku} (concurrent depletion)",
+                )
 
         # Link accepted CTL recommendations to this order (atomic redemption).
         for ref in order.offer_references:
@@ -324,15 +380,17 @@ def place_order(order: OrderIn):
                 (ref.recommendation_id, order_id),
             )
 
-    items_out = [
-        OrderItemOut(
-            id=0, order_id=order_id, sku=sku, size=size, qty=qty,
-            price=float(line_prices[(sku, size)]),
-            offer_flag=(sku, size) in offer_price_by_key,
-            seller_id=product_map[sku]["seller_id"],
+    items_out = []
+    for sku, size in sorted_keys:
+        qty = aggregated[(sku, size)]
+        items_out.append(
+            OrderItemOut(
+                id=0, order_id=order_id, sku=sku, size=size, qty=qty,
+                price=float(line_prices[(sku, size)]),
+                offer_flag=(sku, size) in offer_price_by_key,
+                seller_id=product_map[sku]["seller_id"],
+            )
         )
-        for (sku, size), qty in sorted_keys
-    ]
     return OrderOut(
         id=order_id,
         user_id=order.user_id,
@@ -349,4 +407,5 @@ def place_order(order: OrderIn):
         address=order.address,
         contact=order.contact,
         tracking=[],
+        items=items_out,
     )

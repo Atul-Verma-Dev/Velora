@@ -254,89 +254,276 @@ export function AppProvider({ children }) {
     if (!cart.length) return null;
 
     if (productsBackendEnabled()) {
-      // Backend path: place the order server-side. Pricing is server-authoritative
-      // — the frontend sends only items, delivery and address; the server
-      // calculates subtotal, shipping, discount and total from database values.
-      const staleOffer = cart.find((line) => line.offer && !offerStillValid(products.find((x) => x.id === line.productId), line, config));
-      if (staleOffer) {
-        notify("A Complete the Look offer in your bag has expired. Remove it and try again.", "error");
-        return null;
-      }
-      const backendItems = cart.map((l) => {
-        const p = products.find((x) => x.id === l.productId);
-        return { sku: p.id, size: l.size, qty: l.qty };
-      });
-      // Build offer references for Complete the Look line items.
-      const offerRefs = cart
-        .filter((l) => l.offer)
-        .map((l) => {
-          const p = products.find((x) => x.id === l.productId);
-          return {
-            recommendation_id: l.recommendationId || 0,
-            sku: p.id,
-            size: l.size,
-            offer_price: l.price,
-          };
-        })
-        .filter((r) => r.recommendation_id > 0);
-      try {
-        const placed = await placeOrderApi({
-          user_id: user.id,
-          customer_name: user.name,
-          contact: contact || address.phone,
-          address: `${address.line1}, ${address.line2 ? address.line2 + ", " : ""}${address.city} ${address.pincode}`,
-          payment: payment || "Cash on delivery (demo)",
-          delivery: delivery?.label || "Standard delivery · free",
-          items: backendItems,
-          offer_references: offerRefs,
-        });
-        if (!placed) return null;
-        const orderId = placed.id;
-        // Reconcile local state with the server-placed order.
-        setCart([]);
-        setCoupon(null);
-        setOrders((old) => [
-          {
-            id: orderId,
-            date: formatDate(),
-            placedAt: placed.placed_at || new Date().toISOString().slice(0, 10),
-            status: placed.status || "Processing",
-            payment: placed.payment,
-            address: placed.address,
-            contact: placed.contact,
-            delivery: placed.delivery_label,
-            subtotal: placed.subtotal,
-            discount: placed.discount,
-            shipping: placed.shipping,
-            total: placed.total,
-            userId: user.id,
-            items: cart.map((l) => {
-              const p = products.find((x) => x.id === l.productId);
-              return {
-                id: p.id, name: p.name, brand: p.brand, price: linePrice(l, p), qty: l.qty, offer: Boolean(l.offer),
-                size: l.size, colour: p.color, image: p.image,
-                sellerId: p.sellerId, sellerName: p.sellerName,
-                ...(l.recommendationId ? { recommendationId: l.recommendationId } : {}),
-              };
-            }),
-            tracking: [
-              { label: "Order placed", date: `${formatDate()}, now`, done: true },
-              { label: "Awaiting seller acceptance", date: "Within 24 hours", done: false },
-              { label: "Packed", date: "—", done: false },
-              { label: "Shipped", date: "—", done: false },
-              { label: "Delivered", date: "—", done: false },
-            ],
-          },
-          ...old,
-        ]);
-        log("Order placed", orderId, `${cart.length} line(s) · ${placed.payment}`, "Shopper");
-        notify("Order placed — recorded in PostgreSQL. Inventory decremented. Payment and shipment are not processed in this demo.");
-        return { id: orderId };
-      } catch (err) {
-        notify(`Order failed: ${err.message}`, "error");
-        return null;
-      }
+
+  // ---------------------------------------------------------
+  // BACKEND CHECKOUT
+  // PostgreSQL is authoritative for pricing and inventory.
+  // ---------------------------------------------------------
+
+  // Ensure every cart product exists in the backend catalogue.
+  const invalidProduct = cart.find(
+    (line) => !products.find(
+      (product) => product.id === line.productId
+    )
+  );
+
+  if (invalidProduct) {
+    notify(
+      "A product in your bag is unavailable. Please review your bag.",
+      "error"
+    );
+    return null;
+  }
+
+  // Validate CTL offers before submitting them.
+  // Backend recommendations must have a real persisted ID.
+  const invalidOffer = cart.find((line) => {
+    if (!line.offer) return false;
+
+    const recommendationId = Number(line.recommendationId);
+
+    return (
+      !Number.isInteger(recommendationId) ||
+      recommendationId <= 0 ||
+      line.qty !== 1
+    );
+  });
+
+  if (invalidOffer) {
+    notify(
+      "A Complete the Look offer could not be validated. Remove it and add the offer again.",
+      "error"
+    );
+    return null;
+  }
+
+  // Keep the existing client-side expiry check as an early warning.
+  // The backend independently validates the recommendation.
+  const staleOffer = cart.find((line) =>
+    line.offer &&
+    !offerStillValid(
+      products.find((product) => product.id === line.productId),
+      line,
+      config
+    )
+  );
+
+  if (staleOffer) {
+    notify(
+      "A Complete the Look offer in your bag has expired. Remove it and try again.",
+      "error"
+    );
+    return null;
+  }
+
+  // Convert the cart into the backend's expected item format.
+  const backendItems = cart.map((line) => {
+    const product = products.find(
+      (item) => item.id === line.productId
+    );
+
+    return {
+      sku: product.id,
+      size: line.size,
+      qty: line.qty,
+    };
+  });
+
+  // Send only persisted recommendation references.
+  // Never send a client-controlled offer price.
+  const offerReferences = cart
+    .filter((line) => line.offer)
+    .map((line) => {
+      const product = products.find(
+        (item) => item.id === line.productId
+      );
+
+      return {
+        recommendation_id: Number(line.recommendationId),
+        sku: product.id,
+        size: line.size,
+      };
+    });
+
+  // Convert the UI delivery object into the backend allowlist.
+  const deliveryMethod =
+    delivery?.id === "express"
+      ? "express"
+      : "standard";
+
+  // Address formatting happens here, not in Checkout.jsx.
+  const addressText = [
+    address.line1,
+    address.line2,
+    address.city,
+    address.state,
+    address.pincode,
+  ]
+    .filter(Boolean)
+    .join(", ");
+
+  try {
+
+    const placed = await placeOrderApi({
+
+      user_id: user.id,
+
+      customer_name: address.name || user.name,
+
+      contact: contact || address.phone,
+
+      address: addressText,
+
+      payment: payment || "Cash on delivery (demo)",
+
+      delivery: deliveryMethod,
+
+      items: backendItems,
+
+      offer_references: offerReferences,
+
+      // The backend validates the coupon and calculates
+      // the discount independently.
+      coupon_code: couponArg?.code || null,
+
+    });
+
+    if (!placed || !placed.id) {
+      throw new Error(
+        "The backend did not return a valid order ID."
+      );
     }
+
+    const orderId = placed.id;
+
+    // Reconcile the frontend with the successful backend order.
+    setCart([]);
+    setCoupon(null);
+
+    setOrders((old) => [
+      {
+        id: orderId,
+
+        date: formatDate(),
+
+        placedAt:
+          placed.placed_at ||
+          new Date().toISOString().slice(0, 10),
+
+        status: placed.status || "Processing",
+
+        payment: placed.payment,
+
+        address: placed.address,
+
+        contact: placed.contact,
+
+        delivery: placed.delivery_label,
+
+        subtotal: placed.subtotal,
+
+        discount: placed.discount,
+
+        shipping: placed.shipping,
+
+        total: placed.total,
+
+        userId: user.id,
+
+        items: cart.map((line) => {
+          const product = products.find(
+            (item) => item.id === line.productId
+          );
+
+          return {
+            id: product.id,
+            name: product.name,
+            brand: product.brand,
+
+            // Preserve the confirmed offer price in the UI.
+            price: linePrice(line, product),
+
+            qty: line.qty,
+
+            offer: Boolean(line.offer),
+
+            size: line.size,
+
+            colour: product.color,
+
+            image: product.image,
+
+            sellerId: product.sellerId,
+
+            sellerName: product.sellerName,
+
+            ...(line.recommendationId
+              ? {
+                  recommendationId: line.recommendationId,
+                }
+              : {}),
+          };
+        }),
+
+        tracking: [
+          {
+            label: "Order placed",
+            date: `${formatDate()}, now`,
+            done: true,
+          },
+          {
+            label: "Awaiting seller acceptance",
+            date: "Within 24 hours",
+            done: false,
+          },
+          {
+            label: "Packed",
+            date: "—",
+            done: false,
+          },
+          {
+            label: "Shipped",
+            date: "—",
+            done: false,
+          },
+          {
+            label: "Delivered",
+            date: "—",
+            done: false,
+          },
+        ],
+      },
+
+      ...old,
+    ]);
+
+    log(
+      "Order placed",
+      orderId,
+      `${cart.length} line(s) · ${placed.payment}`,
+      "Shopper"
+    );
+
+    notify(
+      "Order placed — recorded in PostgreSQL. Inventory decremented. Payment and shipment are not processed in this demo."
+    );
+
+    return {
+      id: orderId,
+    };
+
+  } catch (err) {
+
+    console.error("Backend order placement failed:", err);
+
+    notify(
+      `Order failed: ${err.message}`,
+      "error"
+    );
+
+    return null;
+  }
+}
 
     // Local path — unchanged demo behaviour.
     const invalid = cart.find((line) => {

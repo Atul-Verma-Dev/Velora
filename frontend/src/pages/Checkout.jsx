@@ -23,7 +23,7 @@ const DELIVERY_OPTIONS = [
 
 export default function Checkout() {
   const {
-    cart, products, addresses, saveAddress, placeOrder, coupon, setCoupon, config, notify, user,
+    cart, products, addresses, saveAddress, placeOrder, coupon, setCoupon, config, notify,
   } = useApp();
   const nav = useNavigate();
   const backendMode = isBackendEnabled();
@@ -106,63 +106,69 @@ export default function Checkout() {
   };
 
   const submitOrder = async () => {
-    if (placing) return;
+  if (placing) return;
 
-    setPlacing(true);
+  setPlacing(true);
 
-    try {
-      const addr = selectedAddress || { ...newAddress, id: "addr-new" };
-      const paymentLabel =
-        payment === "cod" ? "Cash on delivery (demo)" :
-        payment === "upi" ? `UPI (demo${upiId ? ` · ${upiId}` : ""})` : "Card (demo)";
+  try {
+    const addr = selectedAddress || {
+      ...newAddress,
+      id: "addr-new",
+    };
 
-      // Build backend-compatible cart items with CTL offer references.
-      const backendItems = lines.map((l) => ({
-        sku: l.product.id,
-        size: l.size,
-        qty: l.qty,
-      }));
+    const paymentLabel =
+      payment === "cod"
+        ? "Cash on delivery (demo)"
+        : payment === "upi"
+          ? `UPI (demo${upiId ? ` · ${upiId}` : ""})`
+          : "Card (demo)";
 
-      const offerRefs = lines
-        .filter((l) => l.offer && l.recommendationId)
-        .map((l) => ({
-          recommendation_id: l.recommendationId,
-          sku: l.product.id,
-          size: l.size,
-        }));
+    // Preserve the existing AppStore contract:
+    // address is an object, delivery is an object,
+    // and coupon is the selected coupon object.
+    const deliveryPayload = {
+      id: delivery,
+      label: `${deliveryOption.label} · ${
+        shipping === 0 ? "free" : money(shipping)
+      }`,
+      price: shipping,
+    };
 
-      const result = await placeOrder({
-        user_id: user?.id || "user-demo",
-        customer_name: addr.name,
-        contact: addr.phone,
-        address: `${addr.line1}, ${addr.line2 ? addr.line2 + ", " : ""}${addr.city}, ${addr.state} — ${addr.pincode}`,
-        payment: paymentLabel,
-        delivery: delivery,
-        items: backendItems,
-        offer_references: offerRefs,
-        coupon_code: coupon?.code || null,
-      });
+    const result = await placeOrder({
+      address: addr,
+      contact: addr.phone,
+      payment: paymentLabel,
+      delivery: deliveryPayload,
+      coupon: coupon || null,
+    });
 
-      // Never navigate without a valid persisted order ID.
-      if (!result || !result.id) {
-        return;
-      }
-
-      setCoupon(null);
-      nav(`/order-confirmation/${result.id}`);
-
-    } catch (error) {
-      console.error("Checkout failed:", error);
-      notify(error?.message || "Unable to place your order. Please try again.", "error");
-    } finally {
-      setPlacing(false);
+    // Never navigate before a real order ID is returned.
+    if (!result?.id) {
+      return;
     }
-  };
+
+    setCoupon(null);
+    nav(`/order-confirmation/${result.id}`);
+
+  } catch (error) {
+    console.error("Checkout failed:", error);
+
+    const isBackend = backendMode;
+    const prefix = isBackend ? "Backend order failed:" : "Checkout failed:";
+    notify(
+      `${prefix} ${error?.message || "Unable to place your order. Please try again."}`,
+      "error"
+    );
+
+  } finally {
+    setPlacing(false);
+  }
+};
 
   return (
     <main id="main" className="page-shell checkout-page">
       <Breadcrumbs items={[{ label: "Home", to: "/" }, { label: "Bag", to: "/cart" }, { label: "Checkout" }]} />
-      <PageHead eyebrow="SECURE CHECKOUT" title="Almost yours." caption="Four short steps. Demo checkout — no real payment is collected." />
+      <PageHead eyebrow="SECURE CHECKOUT" title="Almost yours." caption={backendMode ? "Four short steps. Order recorded in PostgreSQL; inventory decremented server-side." : "Four short steps. Demo checkout — no real payment is collected."} />
 
       <ol className="checkout-steps" aria-label="Checkout steps">
         {STEPS.map((s) => (
