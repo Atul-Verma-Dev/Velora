@@ -761,10 +761,31 @@ def test_ctl_base_sku_not_in_order_fails(test_user_id, cleanup_test_orders):
 
 
 def test_ctl_recommendation_reuse_fails(test_user_id, cleanup_test_orders):
-    """A recommendation already linked to another order cannot be reused."""
-    # Create a "previous" order that redeems this recommendation.
+    """A recommendation already linked to another order cannot be reused.
+
+    Cleanup is unconditional via finally. Stock snapshots are captured first,
+    then the first order is placed and the second order is rejected. The
+    finally block deletes all test-created rows, restores stock exactly once
+    from snapshots, verifies snapshots match, verifies no leftover orders or
+    transactions remain, and always deletes the temporary CTL recommendation.
+    """
     prev_user = f"pytest-{uuid.uuid4().hex[:12]}"
     rec_id = _make_ctl_recommendation(cart_sku="VLR-1001", cand_sku="VLR-1004", size="S", price=1200)
+
+    snapshots: dict[tuple[str, str], int] = {}
+    with db_cursor() as cur:
+        for sku, size in (("VLR-1001", "S"), ("VLR-1002", "S"), ("VLR-1004", "S")):
+            cur.execute(
+                "SELECT stock FROM product_sizes WHERE sku = %s AND size = %s",
+                (sku, size),
+            )
+            snapshots[(sku, size)] = int(cur.fetchone()["stock"])
+            cur.execute(
+                "SELECT stock FROM products WHERE sku = %s",
+                (sku,),
+            )
+            snapshots[(sku, "__product__")] = int(cur.fetchone()["stock"])
+
     try:
         # Place an order with the same user to redeem the recommendation.
         resp1 = client.post(
@@ -809,24 +830,13 @@ def test_ctl_recommendation_reuse_fails(test_user_id, cleanup_test_orders):
             },
         )
         assert resp2.status_code == 409
-
-        # Clean up the first order manually since it used a different user.
+    finally:
+        # Clean up the first order unconditionally.
+        prev_order_ids: list[str] = []
         with db_cursor(commit=True) as cur:
             cur.execute("SELECT id FROM orders WHERE user_id = %s", (prev_user,))
             prev_order_ids = [row["id"] for row in cur.fetchall()]
             if prev_order_ids:
-                # Capture order-item rows before deletion for stock restoration.
-                cur.execute(
-                    """
-                    SELECT oi.sku, oi.size, SUM(oi.qty)::INTEGER AS qty
-                    FROM order_items oi
-                    WHERE oi.order_id = ANY(%s)
-                    GROUP BY oi.sku, oi.size
-                    """,
-                    (prev_order_ids,),
-                )
-                order_item_rows = cur.fetchall()
-
                 # Delete inventory transactions using exact reason strings.
                 order_reasons = [f"Sale · order {oid}" for oid in prev_order_ids]
                 cur.execute(
@@ -851,22 +861,68 @@ def test_ctl_recommendation_reuse_fails(test_user_id, cleanup_test_orders):
                 )
                 # Delete orders.
                 cur.execute("DELETE FROM orders WHERE user_id = %s", (prev_user,))
-                # Restore per-size stock.
-                sku_qty_map: dict[str, int] = {}
-                for row in order_item_rows:
+
+        try:
+            # Restore stock exactly once using the captured snapshots.
+            with db_cursor(commit=True) as cur:
+                for sku, size in (("VLR-1001", "S"), ("VLR-1002", "S"), ("VLR-1004", "S")):
                     cur.execute(
-                        "UPDATE product_sizes SET stock = stock + %s WHERE sku = %s AND size = %s",
-                        (row["qty"], row["sku"], row["size"]),
+                        "UPDATE product_sizes SET stock = %s WHERE sku = %s AND size = %s",
+                        (snapshots[(sku, size)], sku, size),
                     )
-                    sku_qty_map[row["sku"]] = sku_qty_map.get(row["sku"], 0) + int(row["qty"])
-                # Restore aggregate product stock per sku.
-                for sku_key, total_qty in sku_qty_map.items():
                     cur.execute(
-                        "UPDATE products SET stock = stock + %s WHERE sku = %s",
-                        (total_qty, sku_key),
+                        "UPDATE products SET stock = %s WHERE sku = %s",
+                        (snapshots[(sku, "__product__")], sku),
                     )
-    finally:
-        _delete_ctl_recommendation(rec_id)
+
+            # Verify stock matches snapshots after cleanup.
+            with db_cursor() as cur:
+                for sku, size in (("VLR-1001", "S"), ("VLR-1002", "S"), ("VLR-1004", "S")):
+                    cur.execute(
+                        "SELECT stock FROM product_sizes WHERE sku = %s AND size = %s",
+                        (sku, size),
+                    )
+                    actual = int(cur.fetchone()["stock"])
+                    assert actual == snapshots[(sku, size)], (
+                        f"{sku} size {size} stock mismatch: {actual} != {snapshots[(sku, size)]}"
+                    )
+                    cur.execute(
+                        "SELECT stock FROM products WHERE sku = %s",
+                        (sku,),
+                    )
+                    actual = int(cur.fetchone()["stock"])
+                    assert actual == snapshots[(sku, "__product__")], (
+                        f"{sku} product stock mismatch: {actual} != {snapshots[(sku, '__product__')]}"
+                    )
+
+            # Verify no temporary orders or inventory transactions remain.
+            with db_cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*)::INTEGER AS cnt FROM orders WHERE user_id = %s",
+                    (prev_user,),
+                )
+                remaining_orders = cur.fetchone()["cnt"]
+                if prev_order_ids:
+                    order_reasons = [f"Sale · order {oid}" for oid in prev_order_ids]
+                    cur.execute(
+                        """
+                        SELECT COUNT(*)::INTEGER AS cnt
+                        FROM inventory_transactions
+                        WHERE reason = ANY(%s)
+                        """,
+                        (order_reasons,),
+                    )
+                    remaining_transactions = cur.fetchone()["cnt"]
+                else:
+                    remaining_transactions = 0
+            assert remaining_orders == 0, f"{remaining_orders} orders remain for {prev_user}"
+            assert remaining_transactions == 0, (
+                f"{remaining_transactions} inventory transactions remain for {prev_user}"
+            )
+        finally:
+            # Always delete the temporary CTL recommendation, even if cleanup
+            # or verification above fails.
+            _delete_ctl_recommendation(rec_id)
 
 
 def test_ctl_duplicate_recommendation_references_fails(test_user_id, cleanup_test_orders):
@@ -1103,7 +1159,6 @@ def test_concurrent_orders_cannot_oversell(test_user_id, cleanup_test_orders):
     from concurrent.futures import ThreadPoolExecutor
     import threading
 
-    # Use a known low-stock product and force stock to exactly 1.
     sku, size = "VLR-1001", "XXL"
 
     # Capture original stock for both aggregate and per-size tables.
@@ -1119,51 +1174,50 @@ def test_concurrent_orders_cannot_oversell(test_user_id, cleanup_test_orders):
         )
         original_size_stock = int(cur.fetchone()["stock"])
 
-    # Set stock to exactly 1 for both tables.
-    with db_cursor(commit=True) as cur:
-        cur.execute(
-            "UPDATE products SET stock = 1 WHERE sku = %s",
-            (sku,),
-        )
-        cur.execute(
-            "UPDATE product_sizes SET stock = 1 WHERE sku = %s AND size = %s",
-            (sku, size),
-        )
-
-    barrier = threading.Barrier(2)
-    results: list[tuple[int, str]] = []
-    results_lock = threading.Lock()
-
-    def place_one(user_suffix):
-        uid = f"pytest-concurrent-{user_suffix}-{uuid.uuid4().hex[:8]}"
-        try:
-            barrier.wait()  # Ensure both threads start simultaneously
-            resp = client.post(
-                "/api/v1/orders",
-                json={
-                    "user_id": uid,
-                    "customer_name": "Concurrent Tester",
-                    "contact": "+91 99999 99999",
-                    "address": "123 Concurrent Street, Mumbai 400001",
-                    "payment": "UPI (demo)",
-                    "delivery": "standard",
-                    "items": [{"sku": sku, "size": size, "qty": 1}],
-                },
-            )
-            status_code = resp.status_code
-        except Exception as e:
-            status_code = 0
-            uid = str(e)
-        with results_lock:
-            results.append((status_code, uid))
-
-    # Fire two requests concurrently with a barrier for true simultaneity.
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = [executor.submit(place_one, i) for i in range(2)]
-        for f in futures:
-            f.result()
-
     try:
+        # Set stock to exactly 1 for both tables.
+        with db_cursor(commit=True) as cur:
+            cur.execute(
+                "UPDATE products SET stock = 1 WHERE sku = %s",
+                (sku,),
+            )
+            cur.execute(
+                "UPDATE product_sizes SET stock = 1 WHERE sku = %s AND size = %s",
+                (sku, size),
+            )
+
+        barrier = threading.Barrier(2)
+        results: list[tuple[int, str]] = []
+        results_lock = threading.Lock()
+
+        def place_one(user_suffix):
+            uid = f"pytest-concurrent-{user_suffix}-{uuid.uuid4().hex[:8]}"
+            try:
+                barrier.wait()  # Ensure both threads start simultaneously
+                resp = client.post(
+                    "/api/v1/orders",
+                    json={
+                        "user_id": uid,
+                        "customer_name": "Concurrent Tester",
+                        "contact": "+91 99999 99999",
+                        "address": "123 Concurrent Street, Mumbai 400001",
+                        "payment": "UPI (demo)",
+                        "delivery": "standard",
+                        "items": [{"sku": sku, "size": size, "qty": 1}],
+                    },
+                )
+                status_code = resp.status_code
+            except Exception:
+                status_code = 0
+            with results_lock:
+                results.append((status_code, uid))
+
+        # Fire two requests concurrently with a barrier for true simultaneity.
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(place_one, i) for i in range(2)]
+            for f in futures:
+                f.result()
+
         # Exactly one should succeed, one should fail with 409.
         statuses = sorted([r[0] for r in results if isinstance(r[0], int)])
         assert 200 in statuses, f"Expected one success, got {statuses}"
@@ -1184,7 +1238,46 @@ def test_concurrent_orders_cannot_oversell(test_user_id, cleanup_test_orders):
         assert after_size == 0, f"Per-size stock should be 0 after concurrent sale, got {after_size}"
         assert after_product == 0, f"Product stock should be 0 after concurrent sale, got {after_product}"
     finally:
-        # Restore original stock for both tables.
+        # Clean up any orders created by this test.
+        order_ids: list[str] = []
+        for status, uid in results:
+            if isinstance(uid, str) and uid.startswith("pytest-concurrent-"):
+                with db_cursor() as cur:
+                    cur.execute("SELECT id FROM orders WHERE user_id = %s", (uid,))
+                    for row in cur.fetchall():
+                        order_ids.append(row["id"])
+
+        if order_ids:
+            # Delete inventory transactions for these orders using exact reason strings.
+            order_reasons = [f"Sale · order {oid}" for oid in order_ids]
+            with db_cursor(commit=True) as cur:
+                cur.execute(
+                    """
+                    DELETE FROM inventory_transactions
+                    WHERE reason = ANY(%s)
+                    """,
+                    (order_reasons,),
+                )
+                # Delete linked bundle acceptance events.
+                cur.execute(
+                    """
+                    DELETE FROM bundle_acceptance_events
+                    WHERE order_id = ANY(%s)
+                    """,
+                    (order_ids,),
+                )
+                # Delete order items.
+                cur.execute(
+                    "DELETE FROM order_items WHERE order_id = ANY(%s)",
+                    (order_ids,),
+                )
+                # Delete orders.
+                cur.execute(
+                    "DELETE FROM orders WHERE id = ANY(%s)",
+                    (order_ids,),
+                )
+
+        # Restore stock exactly once using the original snapshots.
         with db_cursor(commit=True) as cur:
             cur.execute(
                 "UPDATE products SET stock = %s WHERE sku = %s",
@@ -1194,63 +1287,35 @@ def test_concurrent_orders_cannot_oversell(test_user_id, cleanup_test_orders):
                 "UPDATE product_sizes SET stock = %s WHERE sku = %s AND size = %s",
                 (original_size_stock, sku, size),
             )
-            # Clean up any orders created by this test.
-            for status, uid in results:
-                if isinstance(uid, str) and uid.startswith("pytest-concurrent-"):
-                    cur.execute("SELECT id FROM orders WHERE user_id = %s", (uid,))
-                    order_ids = [row["id"] for row in cur.fetchall()]
-                    if order_ids:
-                        # Capture exact order-item rows before deleting them (for stock restore).
-                        cur.execute(
-                            """
-                            SELECT oi.sku, oi.size, SUM(oi.qty)::INTEGER AS qty
-                            FROM order_items oi
-                            WHERE oi.order_id = ANY(%s)
-                            GROUP BY oi.sku, oi.size
-                            """,
-                            (order_ids,),
-                        )
-                        order_item_rows = cur.fetchall()
 
-                        # Delete inventory transactions for these orders using exact reason strings.
-                        order_reasons = [f"Sale · order {oid}" for oid in order_ids]
-                        cur.execute(
-                            """
-                            DELETE FROM inventory_transactions
-                            WHERE reason = ANY(%s)
-                            """,
-                            (order_reasons,),
-                        )
-                        # Delete linked bundle acceptance events.
-                        cur.execute(
-                            """
-                            DELETE FROM bundle_acceptance_events
-                            WHERE order_id = ANY(%s)
-                            """,
-                            (order_ids,),
-                        )
-                        # Delete order items.
-                        cur.execute(
-                            "DELETE FROM order_items WHERE order_id = ANY(%s)",
-                            (order_ids,),
-                        )
-                        # Delete orders.
-                        cur.execute(
-                            "DELETE FROM orders WHERE user_id = %s",
-                            (uid,),
-                        )
-                        # Restore per-size and aggregate product stock.
-                        for row in order_item_rows:
-                            cur.execute(
-                                "UPDATE product_sizes SET stock = stock + %s WHERE sku = %s AND size = %s",
-                                (row["qty"], row["sku"], row["size"]),
-                            )
-                        total_qty = sum(int(row["qty"]) for row in order_item_rows)
-                        if total_qty > 0:
-                            cur.execute(
-                                "UPDATE products SET stock = stock + %s WHERE sku = %s",
-                                (total_qty, sku),
-                            )
+        # Verify stock matches the original snapshots after cleanup.
+        with db_cursor() as cur:
+            cur.execute(
+                "SELECT stock FROM products WHERE sku = %s",
+                (sku,),
+            )
+            restored_product_stock = int(cur.fetchone()["stock"])
+            cur.execute(
+                "SELECT stock FROM product_sizes WHERE sku = %s AND size = %s",
+                (sku, size),
+            )
+            restored_size_stock = int(cur.fetchone()["stock"])
+        assert restored_product_stock == original_product_stock, (
+            f"Product stock mismatch: {restored_product_stock} != {original_product_stock}"
+        )
+        assert restored_size_stock == original_size_stock, (
+            f"Per-size stock mismatch: {restored_size_stock} != {original_size_stock}"
+        )
+
+        # Verify no test-created orders remain for the order IDs we tracked.
+        for oid in order_ids:
+            with db_cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*)::INTEGER AS cnt FROM orders WHERE id = %s",
+                    (oid,),
+                )
+                remaining = cur.fetchone()["cnt"]
+            assert remaining == 0, f"Order {oid} still exists after cleanup"
 
 
 # ── Regression tests for checkout hardening ────────────────────────────
