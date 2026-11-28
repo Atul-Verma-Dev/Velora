@@ -1,0 +1,320 @@
+[
+  {
+    "source": "velora",
+    "original": "velora/public/editorial/reference.jpg",
+    "file": "velora-reference.jpg",
+    "stem": "reference"
+  },
+  {
+    "source": "velora",
+    "original": "velora/public/editorial/hero.jpg",
+    "file": "velora-hero.jpg",
+    "stem": "hero"
+  },
+  {
+    "source": "velora",
+    "original": "velora/public/products/oxford-shirt.jpg",
+    "file": "velora-oxford-shirt.jpg",
+    "stem": "oxford-shirt"
+  },
+  {
+    "source": "velora",
+    "original": "velora/public/products/loafer.jpg",
+    "file": "velora-loafer.jpg",
+    "stem": "loafer"
+  },
+  {
+    "source": "velora",
+    "original": "velora/public/products/derby.jpg",
+    "file": "velora-derby.jpg",
+    "stem": "derby"
+  },
+  {
+    "source": "velora",
+    "original": "velora/public/products/watch-leather.jpg",
+    "file": "velora-watch-leather.jpg",
+    "stem": "watch-leather"
+  },
+  {
+    "source": "velora",
+    "original": "velora/public/products/cap.jpg",
+    "file": "velora-cap.jpg",
+    "stem": "cap"
+  },
+  {
+    "source": "velora",
+    "original": "velora/public/products/merino-crew.jpg",
+    "file": "velora-merino-crew.jpg",
+    "stem": "merino-crew"
+  },
+  {
+    "source": "velora",
+    "original": "velora/public/products/wool-trouser.jpg",
+    "file": "velora-wool-trouser.jpg",
+    "stem": "wool-trouser"
+  },
+  {
+    "source": "velora",
+    "original": "velora/public/products/trainer.jpg",
+    "file": "velora-trainer.jpg",
+    "stem": "trainer"
+  },
+  {
+    "source": "velora",
+    "original": "velora/public/products/selvedge-jean.jpg",
+    "file": "velora-selvedge-jean.jpg",
+    "stem": "selvedge-jean"
+  },
+  {
+    "source": "velora",
+    "original": "velora/public/products/jacket.jpg",
+    "file": "velora-jacket.jpg",
+    "stem": "jacket"
+  },
+  {
+    "source": "velora",
+    "original": "velora/public/products/overcoat.jpg",
+    "file": "velora-overcoat.jpg",
+    "stem": "overcoat"
+  },
+  {
+    "source": "velora",
+    "original": "velora/public/products/watch-steel.jpg",
+    "file": "velora-watch-steel.jpg",
+    "stem": "watch-steel"
+  },
+  {
+    "source": "velora",
+    "original": "velora/public/products/scarf.jpg",
+    "file": "velora-scarf.jpg",
+    "stem": "scarf"
+  },
+  {
+    "source": "velora",
+    "original": "velora/public/products/overshirt.jpg",
+    "file": "velora-overshirt.jpg",
+    "stem": "overshirt"
+  },
+  {
+    "source": "velora",
+    "original": "velora/public/products/camp-shirt.jpg",
+    "file": "velora-camp-shirt.jpg",
+    "stem": "camp-shirt"
+  },
+  {
+    "source": "velora",
+    "original": "velora/public/products/merino-polo.jpg",
+    "file": "velora-merino-polo.jpg",
+    "stem": "merino-polo"
+  },
+  {
+    "source": "velora",
+    "original": "velora/public/products/chino.jpg",
+    "file": "velora-chino.jpg",
+    "stem": "chino"
+  },
+  {
+    "source": "archive",
+    "original": "Studio archive/public/images/marigold-dupatta.jpg",
+    "file": "aranya-marigold-dupatta.jpg",
+    "stem": "marigold-dupatta"
+  },
+  {
+    "source": "archive",
+    "original": "Studio archive/public/images/chikankari-coord.jpg",
+    "file": "aranya-chikankari-coord.jpg",
+    "stem": "chikankari-coord"
+  },
+  {
+    "source": "archive",
+    "original": "Studio archive/public/images/rani-saree.jpg",
+    "file": "aranya-rani-saree.jpg",
+    "stem": "rani-saree"
+  },
+  {
+    "source": "archive",
+    "original": "Studio archive/public/images/genda-lehenga.jpg",
+    "file": "aranya-genda-lehenga.jpg",
+    "stem": "genda-lehenga"
+  },
+  {
+    "source": "archive",
+    "original": "Studio archive/public/images/sage-anarkali.jpg",
+    "file": "aranya-sage-anarkali.jpg",
+    "stem": "sage-anarkali"
+  },
+  {
+    "source": "archive",
+    "original": "Studio archive/public/images/firozi-lehenga.jpg",
+    "file": "aranya-firozi-lehenga.jpg",
+    "stem": "firozi-lehenga"
+  },
+  {
+    "source": "archive",
+    "original": "Studio archive/public/images/noir-kurta.jpg",
+    "file": "aranya-noir-kurta.jpg",
+    "stem": "noir-kurta"
+  },
+  {
+    "source": "archive",
+    "original": "Studio archive/public/images/mustard-dupatta.jpg",
+    "file": "aranya-mustard-dupatta.jpg",
+    "stem": "mustard-dupatta"
+  },
+  {
+    "source": "archive",
+    "original": "Studio archive/public/images/campaign-haveli.jpg",
+    "file": "aranya-campaign-haveli.jpg",
+    "stem": "campaign-haveli"
+  },
+  {
+    "source": "archive",
+    "original": "Studio archive/public/images/terracotta-coord.jpg",
+    "file": "aranya-terracotta-coord.jpg",
+    "stem": "terracotta-coord"
+  },
+  {
+    "source": "archive",
+    "original": "Studio archive/public/images/indigo-kurta.jpg",
+    "file": "aranya-indigo-kurta.jpg",
+    "stem": "indigo-kurta"
+  },
+  {
+    "source": "archive",
+    "original": "Studio archive/public/images/ivory-sharara.jpg",
+    "file": "aranya-ivory-sharara.jpg",
+    "stem": "ivory-sharara"
+  },
+  {
+    "source": "archive",
+    "original": "Studio archive/public/images/marigold-kurta.jpg",
+    "file": "aranya-marigold-kurta.jpg",
+    "stem": "marigold-kurta"
+  },
+  {
+    "source": "archive",
+    "original": "Studio archive/public/images/ivory-dupatta-set.jpg",
+    "file": "aranya-ivory-dupatta-set.jpg",
+    "stem": "ivory-dupatta-set"
+  },
+  {
+    "source": "archive",
+    "original": "Studio archive/public/images/rosewater-saree.jpg",
+    "file": "aranya-rosewater-saree.jpg",
+    "stem": "rosewater-saree"
+  },
+  {
+    "source": "archive",
+    "original": "Studio archive/public/images/handloom-kurta.jpg",
+    "file": "aranya-handloom-kurta.jpg",
+    "stem": "handloom-kurta"
+  },
+  {
+    "source": "archive",
+    "original": "Project/zero-return/assets/hero.jpg",
+    "file": "aranya-hero.jpg",
+    "stem": "hero"
+  },
+  {
+    "source": "archive",
+    "original": "Project/zero-return/assets/dupatta.jpg",
+    "file": "aranya-dupatta.jpg",
+    "stem": "dupatta"
+  },
+  {
+    "source": "archive",
+    "original": "Project/zero-return/assets/kurta.jpg",
+    "file": "aranya-kurta.jpg",
+    "stem": "kurta"
+  },
+  {
+    "source": "archive",
+    "original": "Project/zero-return/assets/jewellery.jpg",
+    "file": "aranya-jewellery.jpg",
+    "stem": "jewellery"
+  },
+  {
+    "source": "archive",
+    "original": "Project/zero-return/assets/anarkali.jpg",
+    "file": "aranya-anarkali.jpg",
+    "stem": "anarkali"
+  },
+  {
+    "source": "archive",
+    "original": "public/images/hoodie.jpg",
+    "file": "meher-hoodie.jpg",
+    "stem": "hoodie"
+  },
+  {
+    "source": "archive",
+    "original": "public/images/trousers.jpg",
+    "file": "meher-trousers.jpg",
+    "stem": "trousers"
+  },
+  {
+    "source": "archive",
+    "original": "public/images/lehenga.jpg",
+    "file": "meher-lehenga.jpg",
+    "stem": "lehenga"
+  },
+  {
+    "source": "archive",
+    "original": "public/images/blazer.jpg",
+    "file": "meher-blazer.jpg",
+    "stem": "blazer"
+  },
+  {
+    "source": "archive",
+    "original": "public/images/sneakers.jpg",
+    "file": "meher-sneakers.jpg",
+    "stem": "sneakers"
+  },
+  {
+    "source": "archive",
+    "original": "public/images/dress.jpg",
+    "file": "meher-dress.jpg",
+    "stem": "dress"
+  },
+  {
+    "source": "archive",
+    "original": "public/images/kurta.jpg",
+    "file": "meher-kurta.jpg",
+    "stem": "kurta"
+  },
+  {
+    "source": "archive",
+    "original": "public/images/denim.jpg",
+    "file": "meher-denim.jpg",
+    "stem": "denim"
+  },
+  {
+    "source": "archive",
+    "original": "public/images/tote.jpg",
+    "file": "meher-tote.jpg",
+    "stem": "tote"
+  },
+  {
+    "source": "archive",
+    "original": "public/images/coord.jpg",
+    "file": "meher-coord.jpg",
+    "stem": "coord"
+  },
+  {
+    "source": "archive",
+    "original": "public/images/cardigan.jpg",
+    "file": "meher-cardigan.jpg",
+    "stem": "cardigan"
+  },
+  {
+    "source": "archive",
+    "original": "public/images/hero.jpg",
+    "file": "meher-hero.jpg",
+    "stem": "hero"
+  },
+  {
+    "source": "archive",
+    "original": "public/images/shirt.jpg",
+    "file": "meher-shirt.jpg",
+    "stem": "shirt"
+  }
+]

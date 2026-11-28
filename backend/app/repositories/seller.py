@@ -1,0 +1,111 @@
+"""Repository layer for seller metrics and liquidation feed."""
+
+from app.core.db import db_cursor
+
+
+def seller_products(seller_id: str):
+    with db_cursor() as cur:
+        cur.execute(
+            """
+            SELECT sku, name, brand, category, subcategory, colour, colour_family,
+                   image_url, mrp, price, cogs, marginal_shipping, stock,
+                   days_in_inventory, units_sold_30d, status
+            FROM products
+            WHERE seller_id = %s
+            ORDER BY days_in_inventory DESC
+            """,
+            (seller_id,),
+        )
+        return cur.fetchall()
+
+
+def seller_metrics(seller_id: str) -> dict:
+    with db_cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+                COUNT(*) FILTER (WHERE status = 'live') AS live_listings,
+                COUNT(*) FILTER (WHERE stock > 0 AND stock <= 8) AS low_stock,
+                COUNT(*) FILTER (WHERE stock = 0) AS out_of_stock,
+                COUNT(*) FILTER (WHERE days_in_inventory >= 60 AND stock > 0) AS aging_inventory,
+                COALESCE(SUM(cogs * stock) FILTER (WHERE days_in_inventory >= 60 AND stock > 0), 0) AS aging_capital_at_cost,
+                COALESCE(SUM(units_sold_30d), 0) AS units_sold_30d
+            FROM products
+            WHERE seller_id = %s
+            """,
+            (seller_id,),
+        )
+        product_stats = dict(cur.fetchone())
+
+        cur.execute(
+            """
+            SELECT
+                COUNT(*) AS orders,
+                COALESCE(SUM(total) FILTER (WHERE status <> 'Cancelled'), 0) AS gross_sales,
+                COALESCE(SUM(total) FILTER (WHERE status = 'Delivered'), 0) AS delivered_sales,
+                COALESCE(SUM(total) FILTER (WHERE status = 'Returned'), 0) AS refunds
+            FROM order_items oi
+            JOIN orders o ON o.id = oi.order_id
+            WHERE oi.seller_id = %s
+            """,
+            (seller_id,),
+        )
+        order_stats = dict(cur.fetchone())
+
+        rec_total = product_stats_placeholder = 0
+        cur.execute(
+            """
+            SELECT COUNT(*) AS n
+            FROM cart_bundle_recommendations cbr
+            JOIN products p ON p.sku = cbr.candidate_sku
+            WHERE p.seller_id = %s
+            """,
+            (seller_id,),
+        )
+        presented = int(cur.fetchone()["n"])
+        cur.execute(
+            """
+            SELECT COUNT(*) AS n
+            FROM cart_bundle_recommendations cbr
+            JOIN products p ON p.sku = cbr.candidate_sku
+            WHERE p.seller_id = %s AND cbr.accepted = TRUE
+            """,
+            (seller_id,),
+        )
+        accepted = int(cur.fetchone()["n"])
+        attach_rate = (accepted / presented * 100) if presented else 0.0
+
+    return {
+        **product_stats,
+        **order_stats,
+        "bundle_attach_rate": round(attach_rate, 2),
+        "bundle_presented": presented,
+        "bundle_accepted": accepted,
+    }
+
+
+def liquidation_feed(seller_id: str, min_age: int = 60):
+    """Aging inventory with offer economics for the seller liquidation view."""
+    with db_cursor() as cur:
+        cur.execute(
+            """
+            SELECT sku, name, brand, category, subcategory, colour, colour_family,
+                   image_url, mrp, price, cogs, marginal_shipping, stock,
+                   days_in_inventory, units_sold_30d,
+                   (cogs + marginal_shipping) AS margin_floor,
+                   CASE
+                     WHEN days_in_inventory >= 120 THEN 0.60
+                     WHEN days_in_inventory >= 90 THEN 0.45
+                     WHEN days_in_inventory >= 60 THEN 0.30
+                     ELSE 0
+                   END AS tier_discount
+            FROM products
+            WHERE seller_id = %s
+              AND status = 'live'
+              AND days_in_inventory >= %s
+              AND stock > 0
+            ORDER BY days_in_inventory DESC
+            """,
+            (seller_id, min_age),
+        )
+        return cur.fetchall()
