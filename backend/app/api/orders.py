@@ -14,8 +14,10 @@ any operation fails.
 
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import APIRouter, HTTPException
+from pydantic import Field
 
 from app.core.db import db_cursor
 from app.core.config import get_settings
@@ -26,36 +28,44 @@ router = APIRouter()
 settings = get_settings()
 
 # Server-controlled shipping rules (mirrors frontend format.js).
-FREE_SHIPPING_THRESHOLD = 1499.0
-STANDARD_SHIPPING = 79.0
-EXPRESS_SHIPPING = 99.0
+FREE_SHIPPING_THRESHOLD = Decimal("1499.00")
+STANDARD_SHIPPING = Decimal("79.00")
+EXPRESS_SHIPPING = Decimal("99.00")
 
 # Server-controlled coupon rules (mirrors frontend format.js).
-COUPON_MIN_BAG = 1999.0
-COUPON_DISCOUNT_PCT = 10
+COUPON_MIN_BAG = Decimal("1999.00")
+COUPON_DISCOUNT_PCT = Decimal("10")
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _server_shipping(delivery: str, subtotal: float) -> float:
-    """Calculate shipping using server-controlled rules."""
-    if delivery and "express" in delivery.lower():
+def _money(value) -> Decimal:
+    """Round to 2 decimal places using banker's rounding for consistency."""
+    return Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def _server_shipping(delivery_method: str, subtotal: Decimal) -> Decimal:
+    """Calculate shipping using server-controlled rules.
+
+    delivery_method is a validated allowlist value: "standard" or "express".
+    """
+    if delivery_method == "express":
         return EXPRESS_SHIPPING
     if subtotal >= FREE_SHIPPING_THRESHOLD:
-        return 0.0
+        return Decimal("0.00")
     return STANDARD_SHIPPING
 
 
-def _server_discount(coupon_code: str | None, subtotal: float) -> float:
+def _server_discount(coupon_code: str | None, subtotal: Decimal) -> Decimal:
     """Validate discount/coupon eligibility server-side."""
     if not coupon_code:
-        return 0.0
+        return Decimal("0.00")
     code = coupon_code.strip().upper()
     if code == "VELORA10" and subtotal >= COUPON_MIN_BAG:
-        return round(subtotal * COUPON_DISCOUNT_PCT / 100.0, 2)
-    return 0.0
+        return _money(subtotal * COUPON_DISCOUNT_PCT / Decimal("100"))
+    return Decimal("0.00")
 
 
 @router.post("")
@@ -63,14 +73,16 @@ def place_order(order: OrderIn):
     """Place an order atomically with server-authoritative pricing.
 
     Steps (all in one transaction):
-    1. Lock product rows and per-size stock with SELECT ... FOR UPDATE.
-    2. Validate SKUs exist, are live, and have valid size records.
-    3. Aggregate duplicate SKU/size lines.
-    4. Check stock against aggregated quantities.
-    5. Validate Complete the Look offer references.
-    6. Calculate subtotal from DB prices, shipping and discount server-side.
-    7. Create order, order items, decrement stock, record transactions.
-    8. Commit or roll back everything on failure.
+    1. Deduplicate cart lines by (sku, size), summing quantities.
+    2. Sort lock keys deterministically to reduce deadlock risk.
+    3. Lock product rows and per-size stock with SELECT ... FOR UPDATE.
+    4. Validate SKUs exist, are live, and have valid size records.
+    5. Check stock against aggregated quantities.
+    6. Validate Complete the Look offer references.
+    7. Calculate subtotal from DB prices, shipping and discount server-side.
+    8. Create order, order items, decrement stock, record inventory transactions,
+       and link CTL acceptance events.
+    9. Commit or roll back everything on failure.
     """
     # Deduplicate cart lines by (sku, size), summing quantities.
     aggregated: dict[tuple[str, str], int] = {}
@@ -78,7 +90,9 @@ def place_order(order: OrderIn):
         key = (item.sku, item.size)
         aggregated[key] = aggregated.get(key, 0) + item.qty
 
-    skus = list({sku for sku, _ in aggregated.keys()})
+    # Sort keys deterministically for consistent lock ordering.
+    sorted_keys = sorted(aggregated.keys())
+    skus = [sku for sku, _ in sorted_keys]
 
     with db_cursor(commit=True) as cur:
         # Lock product rows for the duration of the transaction.
@@ -99,7 +113,8 @@ def place_order(order: OrderIn):
         product_map = {p["sku"]: p for p in products}
 
         # Validate products exist and are live.
-        for (sku, _size), qty in aggregated.items():
+        for sku, size in sorted_keys:
+            qty = aggregated[(sku, size)]
             p = product_map.get(sku)
             if not p:
                 raise HTTPException(status_code=404, detail=f"Product {sku} not found")
@@ -108,7 +123,8 @@ def place_order(order: OrderIn):
 
         # Lock and validate per-size stock. No aggregate fallback for missing sizes.
         size_stock: dict[tuple[str, str], int] = {}
-        for (sku, size), qty in aggregated.items():
+        for sku, size in sorted_keys:
+            qty = aggregated[(sku, size)]
             cur.execute(
                 "SELECT stock FROM product_sizes WHERE sku = %s AND size = %s FOR UPDATE",
                 (sku, size),
@@ -128,11 +144,23 @@ def place_order(order: OrderIn):
             size_stock[(sku, size)] = available
 
         # Validate Complete the Look offer references.
-        offer_price_by_key: dict[tuple[str, str], float] = {}
+        offer_price_by_key: dict[tuple[str, str], Decimal] = {}
+        used_recommendation_ids: set[int] = set()
+        order_base_skus: set[str] = {sku for sku, _ in sorted_keys}
+
         for ref in order.offer_references:
+            # Reject duplicate recommendation references.
+            if ref.recommendation_id in used_recommendation_ids:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Recommendation {ref.recommendation_id} already referenced in this order",
+                )
+            used_recommendation_ids.add(ref.recommendation_id)
+
+            # Lock the recommendation row.
             cur.execute(
                 """
-                SELECT id, sku, size, price, accepted
+                SELECT id, candidate_sku AS sku, size, price, accepted, base_sku
                 FROM cart_bundle_recommendations
                 WHERE id = %s
                 FOR UPDATE
@@ -150,36 +178,75 @@ def place_order(order: OrderIn):
                     status_code=409,
                     detail=f"Recommendation {ref.recommendation_id} has not been accepted",
                 )
-            if rec["sku"] != ref.sku or rec["size"] != ref.size:
+            # Prevent reuse: check if already linked to a completed order.
+            cur.execute(
+                """
+                SELECT 1 FROM bundle_acceptance_events
+                WHERE recommendation_id = %s AND order_id IS NOT NULL
+                """,
+                (ref.recommendation_id,),
+            )
+            if cur.fetchone():
                 raise HTTPException(
                     status_code=409,
-                    detail=f"Recommendation {ref.recommendation_id} does not match SKU {ref.sku} size {ref.size}",
+                    detail=f"Recommendation {ref.recommendation_id} has already been redeemed",
                 )
-            if abs(float(rec["price"]) - ref.offer_price) > 0.01:
+            # Validate candidate SKU matches.
+            if rec["sku"] != ref.sku:
                 raise HTTPException(
                     status_code=409,
-                    detail=f"Offer price {ref.offer_price} does not match recommendation price {rec['price']}",
+                    detail=f"Recommendation {ref.recommendation_id} candidate SKU {rec['sku']} does not match {ref.sku}",
                 )
-            offer_price_by_key[(ref.sku, ref.size)] = float(rec["price"])
+            # Validate size matches.
+            if rec["size"] != ref.size:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Recommendation {ref.recommendation_id} size {rec['size']} does not match {ref.size}",
+                )
+            # Validate base SKU is present in the order.
+            if rec["base_sku"] not in order_base_skus:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Recommendation {ref.recommendation_id} base SKU {rec['base_sku']} is not in this order",
+                )
+            # Validate candidate is still live.
+            candidate = product_map.get(rec["sku"])
+            if not candidate:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Candidate product {rec['sku']} not found",
+                )
+            if candidate["status"] != "live":
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Candidate product {rec['sku']} is no longer live",
+                )
+            # Validate candidate has sufficient stock in the offered size.
+            candidate_key = (rec["sku"], rec["size"])
+            if candidate_key not in size_stock:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Candidate product {rec['sku']} size {rec['size']} not in order inventory",
+                )
+            # Use database-authoritative price, never the client-supplied offer_price.
+            db_price = Decimal(str(rec["price"]))
+            offer_price_by_key[candidate_key] = db_price
 
         # Calculate subtotal from database prices (never trust client subtotal).
-        subtotal = 0.0
-        line_prices: dict[tuple[str, str], float] = {}
-        for (sku, size), qty in aggregated.items():
+        subtotal = Decimal("0.00")
+        line_prices: dict[tuple[str, str], Decimal] = {}
+        for sku, size in sorted_keys:
+            qty = aggregated[(sku, size)]
             p = product_map[sku]
-            unit_price = offer_price_by_key.get((sku, size), float(p["price"]))
+            unit_price = offer_price_by_key.get((sku, size), Decimal(str(p["price"])))
             line_prices[(sku, size)] = unit_price
             subtotal += unit_price * qty
+        subtotal = _money(subtotal)
 
         # Calculate shipping and discount server-side.
         shipping = _server_shipping(order.delivery, subtotal)
-        # Extract coupon code from client_subtotal diagnostic? No — the client
-        # sends coupon info separately. For now, discount is 0 unless we have
-        # a coupon mechanism. The client_subtotal/client_discount fields are
-        # diagnostic only and ignored for pricing.
-        discount = _server_discount(None, subtotal)
-
-        total = round(subtotal - discount + shipping, 2)
+        discount = _server_discount(order.coupon_code, subtotal)
+        total = _money(subtotal - discount + shipping)
 
         order_id = f"VLR-{uuid.uuid4().hex[:8]}"
         placed_at = _now_iso()
@@ -205,7 +272,8 @@ def place_order(order: OrderIn):
 
         # Create order items, decrement per-size stock, record inventory transactions.
         qty_by_sku: dict[str, int] = {}
-        for (sku, size), qty in aggregated.items():
+        for sku, size in sorted_keys:
+            qty = aggregated[(sku, size)]
             p = product_map[sku]
             unit_price = line_prices[(sku, size)]
             is_offer = (sku, size) in offer_price_by_key
@@ -246,14 +314,24 @@ def place_order(order: OrderIn):
                 (total_qty, sku),
             )
 
+        # Link accepted CTL recommendations to this order (atomic redemption).
+        for ref in order.offer_references:
+            cur.execute(
+                """
+                INSERT INTO bundle_acceptance_events (recommendation_id, order_id)
+                VALUES (%s, %s)
+                """,
+                (ref.recommendation_id, order_id),
+            )
+
     items_out = [
         OrderItemOut(
             id=0, order_id=order_id, sku=sku, size=size, qty=qty,
-            price=line_prices[(sku, size)],
+            price=float(line_prices[(sku, size)]),
             offer_flag=(sku, size) in offer_price_by_key,
             seller_id=product_map[sku]["seller_id"],
         )
-        for (sku, size), qty in aggregated.items()
+        for (sku, size), qty in sorted_keys
     ]
     return OrderOut(
         id=order_id,
@@ -262,11 +340,11 @@ def place_order(order: OrderIn):
         status="Processing",
         payment=order.payment,
         delivery_label=order.delivery,
-        delivery_price=shipping,
-        subtotal=subtotal,
-        discount=discount,
-        shipping=shipping,
-        total=total,
+        delivery_price=float(shipping),
+        subtotal=float(subtotal),
+        discount=float(discount),
+        shipping=float(shipping),
+        total=float(total),
         placed_at=placed_at,
         address=order.address,
         contact=order.contact,

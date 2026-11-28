@@ -35,6 +35,23 @@ export async function getProduct(sku) {
 // and PartnerHub. Fields the backend does not provide (rating, reviewCount,
 // per-size stock) get safe defaults.
 export function toFrontendProduct(row) {
+  const sizeEntries = Array.isArray(row.sizes) ? row.sizes : [];
+
+  const sizes = sizeEntries
+    .map((entry) =>
+      typeof entry === "string" ? entry : entry?.size
+    )
+    .filter(Boolean);
+
+  const sizeStockEntries = sizeEntries.filter(
+    (entry) =>
+      typeof entry === "object" && entry !== null && entry.size != null
+  );
+
+  const sizeStock = Object.fromEntries(
+    sizeStockEntries.map((entry) => [entry.size, Number(entry.stock ?? 0)])
+  );
+
   return {
     id: row.sku,
     name: row.name,
@@ -50,7 +67,9 @@ export function toFrontendProduct(row) {
     status: row.status || "live",
     sellerId: row.seller_id || "",
     sellerName: row.brand || "",
-    sizes: (row.sizes || []).map((s) => s.size),
+    sizes: sizes,
+    // Preserve actual database per-size inventory.
+    sizeStock: sizeStockEntries.length ? sizeStock : undefined,
     occasion: row.occasion || [],
     fabric: row.fabric || "",
     pattern: row.pattern || "",

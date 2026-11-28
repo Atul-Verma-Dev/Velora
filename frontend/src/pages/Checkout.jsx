@@ -23,7 +23,7 @@ const DELIVERY_OPTIONS = [
 
 export default function Checkout() {
   const {
-    cart, products, addresses, saveAddress, placeOrder, coupon, setCoupon, config, notify,
+    cart, products, addresses, saveAddress, placeOrder, coupon, setCoupon, config, notify, user,
   } = useApp();
   const nav = useNavigate();
   const backendMode = isBackendEnabled();
@@ -105,23 +105,57 @@ export default function Checkout() {
     setStep((s) => Math.min(4, s + 1));
   };
 
-  const submitOrder = () => {
+  const submitOrder = async () => {
+    if (placing) return;
+
     setPlacing(true);
-    const addr = selectedAddress || { ...newAddress, id: "addr-new" };
-    const paymentLabel =
-      payment === "cod" ? "Cash on delivery (demo)" :
-      payment === "upi" ? `UPI (demo${upiId ? ` · ${upiId}` : ""})` : "Card (demo)";
-    const order = placeOrder({
-      address: addr,
-      contact: addr.phone,
-      payment: paymentLabel,
-      delivery: { label: `${deliveryOption.label} · ${shipping === 0 ? "free" : money(shipping)}`, price: shipping },
-      coupon: discount ? { code: coupon.code, amount: discount } : null,
-    });
-    setPlacing(false);
-    if (order) {
+
+    try {
+      const addr = selectedAddress || { ...newAddress, id: "addr-new" };
+      const paymentLabel =
+        payment === "cod" ? "Cash on delivery (demo)" :
+        payment === "upi" ? `UPI (demo${upiId ? ` · ${upiId}` : ""})` : "Card (demo)";
+
+      // Build backend-compatible cart items with CTL offer references.
+      const backendItems = lines.map((l) => ({
+        sku: l.product.id,
+        size: l.size,
+        qty: l.qty,
+      }));
+
+      const offerRefs = lines
+        .filter((l) => l.offer && l.recommendationId)
+        .map((l) => ({
+          recommendation_id: l.recommendationId,
+          sku: l.product.id,
+          size: l.size,
+        }));
+
+      const result = await placeOrder({
+        user_id: user?.id || "user-demo",
+        customer_name: addr.name,
+        contact: addr.phone,
+        address: `${addr.line1}, ${addr.line2 ? addr.line2 + ", " : ""}${addr.city}, ${addr.state} — ${addr.pincode}`,
+        payment: paymentLabel,
+        delivery: delivery,
+        items: backendItems,
+        offer_references: offerRefs,
+        coupon_code: coupon?.code || null,
+      });
+
+      // Never navigate without a valid persisted order ID.
+      if (!result || !result.id) {
+        return;
+      }
+
       setCoupon(null);
-      nav(`/order-confirmation/${order.id}`);
+      nav(`/order-confirmation/${result.id}`);
+
+    } catch (error) {
+      console.error("Checkout failed:", error);
+      notify(error?.message || "Unable to place your order. Please try again.", "error");
+    } finally {
+      setPlacing(false);
     }
   };
 

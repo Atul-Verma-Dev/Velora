@@ -1,5 +1,8 @@
 """Pydantic schemas for order domain."""
 
+from typing import Literal
+from decimal import Decimal
+
 from pydantic import BaseModel, Field
 
 
@@ -18,7 +21,6 @@ class OfferReferenceIn(BaseModel):
     recommendation_id: int = Field(..., ge=1)
     sku: str = Field(..., min_length=1)
     size: str = Field(..., min_length=1, max_length=32)
-    offer_price: float = Field(..., ge=0)
 
 
 class OrderIn(BaseModel):
@@ -27,9 +29,10 @@ class OrderIn(BaseModel):
     contact: str = Field(..., min_length=1)
     address: str = Field(..., min_length=1)
     payment: str = Field(..., min_length=1)
-    delivery: str = Field(..., min_length=1)
+    delivery: Literal["standard", "express"] = Field(default="standard")
     items: list[OrderItemIn] = Field(..., min_length=1)
     offer_references: list[OfferReferenceIn] = Field(default_factory=list)
+    coupon_code: str | None = Field(default=None, max_length=64)
     # Client-supplied pricing fields are diagnostic only. The server always
     # recalculates subtotal, shipping and total from database values and
     # never trusts a client-supplied total.
