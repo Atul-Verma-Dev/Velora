@@ -69,4 +69,4 @@ class OrderOut(BaseModel):
     address: str
     contact: str
     tracking: list
-    items: list[OrderItemOut] = []
+    items: list[OrderItemOut] = Field(default_factory=list)

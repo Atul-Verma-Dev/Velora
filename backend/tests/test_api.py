@@ -609,6 +609,7 @@ def test_ctl_valid_accepted_recommendation_succeeds(test_user_id, cleanup_test_o
                 "delivery": "standard",
                 "items": [
                     {"sku": "VLR-1001", "size": "S", "qty": 1},
+                    {"sku": "VLR-1002", "size": "S", "qty": 1},
                     {"sku": "VLR-1004", "size": "S", "qty": 1},
                 ],
                 "offer_references": [
@@ -616,7 +617,7 @@ def test_ctl_valid_accepted_recommendation_succeeds(test_user_id, cleanup_test_o
                 ],
             },
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
         data = resp.json()
         assert data["total"] > 0
         # CTL line should use the recommendation price from the database.
@@ -777,6 +778,7 @@ def test_ctl_recommendation_reuse_fails(test_user_id, cleanup_test_orders):
                 "delivery": "standard",
                 "items": [
                     {"sku": "VLR-1001", "size": "S", "qty": 1},
+                    {"sku": "VLR-1002", "size": "S", "qty": 1},
                     {"sku": "VLR-1004", "size": "S", "qty": 1},
                 ],
                 "offer_references": [
@@ -784,7 +786,7 @@ def test_ctl_recommendation_reuse_fails(test_user_id, cleanup_test_orders):
                 ],
             },
         )
-        assert resp1.status_code == 200
+        assert resp1.status_code == 200, f"Expected 200, got {resp1.status_code}: {resp1.text}"
 
         # Now try to reuse the same recommendation with a different user.
         resp2 = client.post(
@@ -798,6 +800,7 @@ def test_ctl_recommendation_reuse_fails(test_user_id, cleanup_test_orders):
                 "delivery": "standard",
                 "items": [
                     {"sku": "VLR-1001", "size": "S", "qty": 1},
+                    {"sku": "VLR-1002", "size": "S", "qty": 1},
                     {"sku": "VLR-1004", "size": "S", "qty": 1},
                 ],
                 "offer_references": [
@@ -812,39 +815,55 @@ def test_ctl_recommendation_reuse_fails(test_user_id, cleanup_test_orders):
             cur.execute("SELECT id FROM orders WHERE user_id = %s", (prev_user,))
             prev_order_ids = [row["id"] for row in cur.fetchall()]
             if prev_order_ids:
-                cur.execute("DELETE FROM bundle_acceptance_events WHERE order_id = ANY(%s)", (prev_order_ids,))
-                cur.execute("DELETE FROM order_items WHERE order_id = ANY(%s)", (prev_order_ids,))
-                cur.execute("DELETE FROM orders WHERE user_id = %s", (prev_user,))
-                # Restore inventory for the previous order.
+                # Capture order-item rows before deletion for stock restoration.
                 cur.execute(
                     """
                     SELECT oi.sku, oi.size, SUM(oi.qty)::INTEGER AS qty
                     FROM order_items oi
-                    JOIN orders o ON o.id = oi.order_id
-                    WHERE o.user_id = %s
+                    WHERE oi.order_id = ANY(%s)
                     GROUP BY oi.sku, oi.size
                     """,
-                    (prev_user,),
+                    (prev_order_ids,),
                 )
-                for row in cur.fetchall():
+                order_item_rows = cur.fetchall()
+
+                # Delete inventory transactions using exact reason strings.
+                order_reasons = [f"Sale · order {oid}" for oid in prev_order_ids]
+                cur.execute(
+                    """
+                    DELETE FROM inventory_transactions
+                    WHERE reason = ANY(%s)
+                    """,
+                    (order_reasons,),
+                )
+                # Delete linked bundle acceptance events.
+                cur.execute(
+                    """
+                    DELETE FROM bundle_acceptance_events
+                    WHERE order_id = ANY(%s)
+                    """,
+                    (prev_order_ids,),
+                )
+                # Delete order items.
+                cur.execute(
+                    "DELETE FROM order_items WHERE order_id = ANY(%s)",
+                    (prev_order_ids,),
+                )
+                # Delete orders.
+                cur.execute("DELETE FROM orders WHERE user_id = %s", (prev_user,))
+                # Restore per-size stock.
+                sku_qty_map: dict[str, int] = {}
+                for row in order_item_rows:
                     cur.execute(
                         "UPDATE product_sizes SET stock = stock + %s WHERE sku = %s AND size = %s",
                         (row["qty"], row["sku"], row["size"]),
                     )
-                cur.execute(
-                    """
-                    SELECT oi.sku, SUM(oi.qty)::INTEGER AS qty
-                    FROM order_items oi
-                    JOIN orders o ON o.id = oi.order_id
-                    WHERE o.user_id = %s
-                    GROUP BY oi.sku
-                    """,
-                    (prev_user,),
-                )
-                for row in cur.fetchall():
+                    sku_qty_map[row["sku"]] = sku_qty_map.get(row["sku"], 0) + int(row["qty"])
+                # Restore aggregate product stock per sku.
+                for sku_key, total_qty in sku_qty_map.items():
                     cur.execute(
                         "UPDATE products SET stock = stock + %s WHERE sku = %s",
-                        (row["qty"], row["sku"]),
+                        (total_qty, sku_key),
                     )
     finally:
         _delete_ctl_recommendation(rec_id)
@@ -1084,29 +1103,32 @@ def test_concurrent_orders_cannot_oversell(test_user_id, cleanup_test_orders):
     from concurrent.futures import ThreadPoolExecutor
     import threading
 
-    # Find a product-size with exactly 1 unit available.
+    # Use a known low-stock product and force stock to exactly 1.
+    sku, size = "VLR-1001", "XXL"
+
+    # Capture original stock for both aggregate and per-size tables.
     with db_cursor() as cur:
         cur.execute(
-            """
-            SELECT sku, size, stock FROM product_sizes
-            WHERE stock = 1
-            LIMIT 1
-            """
+            "SELECT stock FROM products WHERE sku = %s",
+            (sku,),
         )
-        row = cur.fetchone()
-    if not row:
-        # Fall back to a known low-stock product.
-        sku, size = "VLR-1001", "XXL"
-    else:
-        sku, size = row["sku"], row["size"]
-
-    # Record stock before for snapshot restoration.
-    with db_cursor() as cur:
+        original_product_stock = int(cur.fetchone()["stock"])
         cur.execute(
             "SELECT stock FROM product_sizes WHERE sku = %s AND size = %s",
             (sku, size),
         )
-        before = int(cur.fetchone()["stock"])
+        original_size_stock = int(cur.fetchone()["stock"])
+
+    # Set stock to exactly 1 for both tables.
+    with db_cursor(commit=True) as cur:
+        cur.execute(
+            "UPDATE products SET stock = 1 WHERE sku = %s",
+            (sku,),
+        )
+        cur.execute(
+            "UPDATE product_sizes SET stock = 1 WHERE sku = %s AND size = %s",
+            (sku, size),
+        )
 
     barrier = threading.Barrier(2)
     results: list[tuple[int, str]] = []
@@ -1147,20 +1169,30 @@ def test_concurrent_orders_cannot_oversell(test_user_id, cleanup_test_orders):
         assert 200 in statuses, f"Expected one success, got {statuses}"
         assert 409 in statuses, f"Expected one 409 rejection, got {statuses}"
 
-        # Verify stock is now 0.
+        # Verify stock is now 0 for both tables.
         with db_cursor() as cur:
             cur.execute(
                 "SELECT stock FROM product_sizes WHERE sku = %s AND size = %s",
                 (sku, size),
             )
-            after = int(cur.fetchone()["stock"])
-        assert after == 0, f"Stock should be 0 after concurrent sale, got {after}"
+            after_size = int(cur.fetchone()["stock"])
+            cur.execute(
+                "SELECT stock FROM products WHERE sku = %s",
+                (sku,),
+            )
+            after_product = int(cur.fetchone()["stock"])
+        assert after_size == 0, f"Per-size stock should be 0 after concurrent sale, got {after_size}"
+        assert after_product == 0, f"Product stock should be 0 after concurrent sale, got {after_product}"
     finally:
-        # Restore stock snapshot regardless of test outcome.
+        # Restore original stock for both tables.
         with db_cursor(commit=True) as cur:
             cur.execute(
+                "UPDATE products SET stock = %s WHERE sku = %s",
+                (original_product_stock, sku),
+            )
+            cur.execute(
                 "UPDATE product_sizes SET stock = %s WHERE sku = %s AND size = %s",
-                (before, sku, size),
+                (original_size_stock, sku, size),
             )
             # Clean up any orders created by this test.
             for status, uid in results:
@@ -1168,12 +1200,191 @@ def test_concurrent_orders_cannot_oversell(test_user_id, cleanup_test_orders):
                     cur.execute("SELECT id FROM orders WHERE user_id = %s", (uid,))
                     order_ids = [row["id"] for row in cur.fetchall()]
                     if order_ids:
+                        # Capture exact order-item rows before deleting them (for stock restore).
                         cur.execute(
-                            "DELETE FROM bundle_acceptance_events WHERE order_id = ANY(%s)",
+                            """
+                            SELECT oi.sku, oi.size, SUM(oi.qty)::INTEGER AS qty
+                            FROM order_items oi
+                            WHERE oi.order_id = ANY(%s)
+                            GROUP BY oi.sku, oi.size
+                            """,
                             (order_ids,),
                         )
+                        order_item_rows = cur.fetchall()
+
+                        # Delete inventory transactions for these orders using exact reason strings.
+                        order_reasons = [f"Sale · order {oid}" for oid in order_ids]
+                        cur.execute(
+                            """
+                            DELETE FROM inventory_transactions
+                            WHERE reason = ANY(%s)
+                            """,
+                            (order_reasons,),
+                        )
+                        # Delete linked bundle acceptance events.
+                        cur.execute(
+                            """
+                            DELETE FROM bundle_acceptance_events
+                            WHERE order_id = ANY(%s)
+                            """,
+                            (order_ids,),
+                        )
+                        # Delete order items.
                         cur.execute(
                             "DELETE FROM order_items WHERE order_id = ANY(%s)",
                             (order_ids,),
                         )
-                        cur.execute("DELETE FROM orders WHERE user_id = %s", (uid,))
+                        # Delete orders.
+                        cur.execute(
+                            "DELETE FROM orders WHERE user_id = %s",
+                            (uid,),
+                        )
+                        # Restore per-size and aggregate product stock.
+                        for row in order_item_rows:
+                            cur.execute(
+                                "UPDATE product_sizes SET stock = stock + %s WHERE sku = %s AND size = %s",
+                                (row["qty"], row["sku"], row["size"]),
+                            )
+                        total_qty = sum(int(row["qty"]) for row in order_item_rows)
+                        if total_qty > 0:
+                            cur.execute(
+                                "UPDATE products SET stock = stock + %s WHERE sku = %s",
+                                (total_qty, sku),
+                            )
+
+
+# ── Regression tests for checkout hardening ────────────────────────────
+
+def test_ctl_60pct_tier_gated_by_base_cart_subtotal(test_user_id, cleanup_test_orders):
+    """60% CTL tier is gated by the original cart subtotal, not the final subtotal.
+
+    VLR-1001 price = 1899 (< 2000 gate). VLR-1004 is a 60% tier CTL candidate
+    at ₹1200. The final subtotal would be 1899 + 1200 = 3099 >= 2000, but the
+    original cart subtotal (excluding CTL candidate) is only 1899 < 2000, so
+    the gate must fail.
+    """
+    rec_id = _make_ctl_recommendation(cart_sku="VLR-1001", cand_sku="VLR-1004", size="S", price=1200)
+    try:
+        resp = client.post(
+            "/api/v1/orders",
+            json={
+                "user_id": test_user_id,
+                "customer_name": "Gate Tester",
+                "contact": "+91 99999 99999",
+                "address": "123 Gate Street, Mumbai 400001",
+                "payment": "UPI (demo)",
+                "delivery": "standard",
+                "items": [
+                    {"sku": "VLR-1001", "size": "S", "qty": 1},
+                    {"sku": "VLR-1004", "size": "S", "qty": 1},
+                ],
+                "offer_references": [
+                    {"recommendation_id": rec_id, "sku": "VLR-1004", "size": "S"},
+                ],
+            },
+        )
+        assert resp.status_code == 409, f"Expected 409, got {resp.status_code}: {resp.text}"
+    finally:
+        _delete_ctl_recommendation(rec_id)
+
+
+def test_ctl_60pct_tier_passes_when_base_cart_subtotal_meets_gate(test_user_id, cleanup_test_orders):
+    """60% CTL tier succeeds when the original cart subtotal (excluding CTL candidate) meets the gate.
+
+    VLR-1002 S price = 1499 (below gate), but we add a second non-CTL line
+    so the base cart subtotal exceeds 2000. VLR-1004 is the 60% tier CTL candidate.
+    """
+    rec_id = _make_ctl_recommendation(cart_sku="VLR-1002", cand_sku="VLR-1004", size="S", price=1200)
+    try:
+        resp = client.post(
+            "/api/v1/orders",
+            json={
+                "user_id": test_user_id,
+                "customer_name": "Gate Tester",
+                "contact": "+91 99999 99999",
+                "address": "123 Gate Street, Mumbai 400001",
+                "payment": "UPI (demo)",
+                "delivery": "standard",
+                "items": [
+                    {"sku": "VLR-1002", "size": "S", "qty": 1},
+                    {"sku": "VLR-1001", "size": "S", "qty": 1},
+                    {"sku": "VLR-1004", "size": "S", "qty": 1},
+                ],
+                "offer_references": [
+                    {"recommendation_id": rec_id, "sku": "VLR-1004", "size": "S"},
+                ],
+            },
+        )
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+        data = resp.json()
+        assert data["total"] > 0
+        ctl_item = [i for i in data.get("items", []) if i["sku"] == "VLR-1004"]
+        assert len(ctl_item) == 1
+        assert ctl_item[0]["offer_flag"] is True
+    finally:
+        _delete_ctl_recommendation(rec_id)
+
+
+def test_order_items_return_real_database_ids(test_user_id, cleanup_test_orders):
+    """Every returned order item has a positive ID matching the persisted row."""
+    resp = client.post(
+        "/api/v1/orders",
+        json={
+            "user_id": test_user_id,
+            "customer_name": "ID Tester",
+            "contact": "+91 99999 99999",
+            "address": "123 ID Street, Mumbai 400001",
+            "payment": "UPI (demo)",
+            "delivery": "standard",
+            "items": [
+                {"sku": "VLR-1003", "size": "M", "qty": 1},
+            ],
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "items" in data
+    assert len(data["items"]) == 1
+    item = data["items"][0]
+    assert item["id"] > 0, f"Order item id must be positive, got {item['id']}"
+
+    # Verify the ID matches the persisted database row.
+    with db_cursor() as cur:
+        cur.execute(
+            "SELECT id FROM order_items WHERE id = %s AND order_id = %s",
+            (item["id"], data["id"]),
+        )
+        row = cur.fetchone()
+    assert row is not None, f"Order item id {item['id']} not found in database"
+    assert int(row["id"]) == item["id"]
+
+
+def test_order_items_multiple_lines_return_real_ids(test_user_id, cleanup_test_orders):
+    """Multiple order items each return a positive real database ID."""
+    resp = client.post(
+        "/api/v1/orders",
+        json={
+            "user_id": test_user_id,
+            "customer_name": "ID Tester",
+            "contact": "+91 99999 99999",
+            "address": "123 ID Street, Mumbai 400001",
+            "payment": "UPI (demo)",
+            "delivery": "standard",
+            "items": [
+                {"sku": "VLR-1003", "size": "M", "qty": 1},
+                {"sku": "VLR-1003", "size": "S", "qty": 2},
+            ],
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["items"]) == 2
+    for item in data["items"]:
+        assert item["id"] > 0, f"Order item id must be positive, got {item['id']}"
+        with db_cursor() as cur:
+            cur.execute(
+                "SELECT id FROM order_items WHERE id = %s AND order_id = %s",
+                (item["id"], data["id"]),
+            )
+            row = cur.fetchone()
+        assert row is not None, f"Order item id {item['id']} not found in database"

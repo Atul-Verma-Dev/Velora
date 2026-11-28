@@ -148,6 +148,9 @@ def place_order(order: OrderIn):
         used_recommendation_ids: set[int] = set()
         used_candidate_keys: set[tuple[str, str]] = set()
         ctl_tier_60_keys: set[tuple[str, str]] = set()
+        ctl_candidate_keys: set[tuple[str, str]] = {
+            (ref.sku, ref.size) for ref in order.offer_references
+        }
         order_base_skus: set[str] = {sku for sku, _ in sorted_keys}
 
         # Pricing config for CTL revalidation.
@@ -274,6 +277,7 @@ def place_order(order: OrderIn):
 
         # Calculate subtotal from database prices (never trust client subtotal).
         subtotal = Decimal("0.00")
+        base_cart_subtotal = Decimal("0.00")
         line_prices: dict[tuple[str, str], Decimal] = {}
         for sku, size in sorted_keys:
             qty = aggregated[(sku, size)]
@@ -281,13 +285,20 @@ def place_order(order: OrderIn):
             unit_price = offer_price_by_key.get((sku, size), Decimal(str(p["price"])))
             line_prices[(sku, size)] = unit_price
             subtotal += unit_price * qty
+            if (sku, size) not in ctl_candidate_keys:
+                base_cart_subtotal += Decimal(str(p["price"])) * qty
         subtotal = _money(subtotal)
+        base_cart_subtotal = _money(base_cart_subtotal)
 
-        # Deep bundle gate: 60% CTL tier requires cart subtotal >= gate.
-        if ctl_tier_60_keys and not deep_tier_gate_met(float(subtotal), int(settings.deep_bundle_gate)):
+        # Deep bundle gate: 60% CTL tier requires the original cart subtotal
+        # (excluding CTL candidates) to meet the gate.
+        if ctl_tier_60_keys and not deep_tier_gate_met(
+            float(base_cart_subtotal),
+            int(settings.deep_bundle_gate),
+        ):
             raise HTTPException(
                 status_code=409,
-                detail=f"60% CTL tier requires cart subtotal >= ₹{settings.deep_bundle_gate}",
+                detail="60% CTL tier requires the original cart subtotal to meet the configured threshold",
             )
 
         # Calculate shipping and discount server-side.
@@ -319,6 +330,7 @@ def place_order(order: OrderIn):
 
         # Create order items, decrement per-size stock, record inventory transactions.
         qty_by_sku: dict[str, int] = {}
+        items_out = []
         for sku, size in sorted_keys:
             qty = aggregated[(sku, size)]
             p = product_map[sku]
@@ -328,8 +340,19 @@ def place_order(order: OrderIn):
                 """
                 INSERT INTO order_items (order_id, sku, size, qty, price, offer_flag, seller_id)
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
                 """,
                 (order_id, sku, size, qty, unit_price, is_offer, p["seller_id"]),
+            )
+            inserted_row = cur.fetchone()
+            item_id = int(inserted_row["id"])
+            items_out.append(
+                OrderItemOut(
+                    id=item_id, order_id=order_id, sku=sku, size=size, qty=qty,
+                    price=float(line_prices[(sku, size)]),
+                    offer_flag=(sku, size) in offer_price_by_key,
+                    seller_id=product_map[sku]["seller_id"],
+                )
             )
             cur.execute(
                 """
@@ -380,17 +403,6 @@ def place_order(order: OrderIn):
                 (ref.recommendation_id, order_id),
             )
 
-    items_out = []
-    for sku, size in sorted_keys:
-        qty = aggregated[(sku, size)]
-        items_out.append(
-            OrderItemOut(
-                id=0, order_id=order_id, sku=sku, size=size, qty=qty,
-                price=float(line_prices[(sku, size)]),
-                offer_flag=(sku, size) in offer_price_by_key,
-                seller_id=product_map[sku]["seller_id"],
-            )
-        )
     return OrderOut(
         id=order_id,
         user_id=order.user_id,

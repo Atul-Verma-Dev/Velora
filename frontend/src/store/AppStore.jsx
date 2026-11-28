@@ -396,6 +396,14 @@ export function AppProvider({ children }) {
 
     const orderId = placed.id;
 
+    // Build a lookup of server-returned order items keyed by sku::size.
+    const serverItemsByKey = new Map(
+      (placed.items || []).map((item) => [
+        `${item.sku}::${item.size}`,
+        item,
+      ])
+    );
+
     // Reconcile the frontend with the successful backend order.
     setCart([]);
     setCoupon(null);
@@ -435,13 +443,19 @@ export function AppProvider({ children }) {
             (item) => item.id === line.productId
           );
 
+          // Use the server-returned price when available; fall back to the
+          // client-side line price for the local demo path.
+          const serverItem = serverItemsByKey.get(
+            `${line.productId}::${line.size}`
+          );
+
           return {
             id: product.id,
             name: product.name,
             brand: product.brand,
 
-            // Preserve the confirmed offer price in the UI.
-            price: linePrice(line, product),
+            // Preserve the confirmed offer price from the backend when present.
+            price: serverItem ? Number(serverItem.price) : linePrice(line, product),
 
             qty: line.qty,
 
