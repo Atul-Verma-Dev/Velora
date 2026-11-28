@@ -4,6 +4,7 @@ from fastapi import APIRouter
 
 from app.repositories.product import list_products
 from app.repositories.search import log_search_event, get_search_events, search_metrics
+from app.schemas.search import SearchLogRequest
 
 router = APIRouter()
 
@@ -38,21 +39,18 @@ def search_products(
 
 
 @router.post("/log")
-def log_search(
-    query: str,
-    has_image: bool = False,
-    result_count: int = 0,
-    excluded: dict = None,
-    duration_ms: int = 0,
-):
-    if excluded is None:
-        excluded = {}
+def log_search(req: SearchLogRequest):
+    """Log a search event.
+
+    Accepts a JSON body matching SearchLogRequest. The previous scalar
+    (query-parameter) signature is replaced so the frontend can POST JSON.
+    """
     eid = log_search_event(
-        query=query,
-        has_image=has_image,
-        result_count=result_count,
-        excluded=excluded,
-        duration_ms=duration_ms,
+        query=req.query,
+        has_image=req.has_image,
+        result_count=req.result_count,
+        excluded=req.excluded,
+        duration_ms=req.duration_ms,
     )
     return {"id": eid}
 

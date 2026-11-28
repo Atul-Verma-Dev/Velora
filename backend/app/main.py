@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import get_settings
 from app.core.db import close_db_pool, init_db_pool
 from app.core.logging import setup_logging
-from app.api import bundles, inventory, seller, products, search, fit
+from app.api import bundles, inventory, seller, products, search, fit, orders
 
 settings = get_settings()
 
@@ -46,6 +46,7 @@ app.include_router(seller.router, prefix="/api/v1/seller", tags=["seller"])
 app.include_router(products.router, prefix="/api/v1/products", tags=["products"])
 app.include_router(search.router, prefix="/api/v1/search", tags=["search"])
 app.include_router(fit.router, prefix="/api/v1/fit", tags=["fit"])
+app.include_router(orders.router, prefix="/api/v1/orders", tags=["orders"])
 
 
 @app.get("/health")

@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import { useApp } from "../store/AppStore.jsx";
 import { explainIntent, search as runSearch, threadB } from "../lib/search.js";
+import { searchProducts, backendEnabled as searchBackendEnabled } from "../lib/api/search.js";
 import { logSearchEvent } from "../lib/api/search.js";
 import { categories } from "../data/catalog.js";
 import { money } from "../lib/format.js";
@@ -24,6 +25,46 @@ const EXAMPLES = [
 
 const ALL_OCCASIONS = ["Wedding", "Haldi", "Mehendi", "Festive", "Party", "Workwear", "Everyday", "Travel"];
 const ALL_COLOURS = ["Yellow", "Green", "Ivory", "White", "Blue", "Pink", "Rust", "Black", "Grey", "Beige", "Brown", "Gold", "Silver"];
+
+// Map a backend product row to the frontend product shape used by ProductCard.
+// Backend and frontend schemas are intentionally not merged — this is a one-way
+// adaptation for display only. Fields the backend does not provide (rating,
+// reviewCount, per-size stock) get safe defaults.
+function toFrontendProduct(row) {
+  return {
+    id: row.sku,
+    name: row.name,
+    brand: row.brand,
+    category: row.category,
+    subcategory: row.subcategory,
+    color: row.colour || "",
+    colorFamily: row.colour_family || null,
+    image: row.image_url || "",
+    price: Number(row.price || 0),
+    mrp: Number(row.mrp || 0),
+    stock: Number(row.stock || 0),
+    status: row.status || "live",
+    sellerId: row.seller_id || "",
+    sellerName: row.brand || "",
+    sizes: ["One size"],
+    occasion: row.occasion || [],
+    fabric: row.fabric || "",
+    pattern: row.pattern || "",
+    fit: row.fit || "",
+    length: row.length || "",
+    description: row.description || "",
+    tags: row.tags || [],
+    rating: 0,
+    reviewCount: 0,
+    addedDaysAgo: Number(row.added_days_ago || 0),
+    stockAgeDays: Number(row.days_in_inventory || 0),
+    unitsSold30d: Number(row.units_sold_30d || 0),
+    cogs: Number(row.cogs || 0),
+    marginalShipping: Number(row.marginal_shipping || 45),
+    colorHex: row.colour_hex || "#cccccc",
+    images: row.images || [row.image_url],
+  };
+}
 
 export default function Search() {
   const { products, recordSearch, fitProfile } = useApp();
@@ -62,6 +103,7 @@ export default function Search() {
 
   const run = async (imageFile = file) => {
     if (!query.trim() && !imageFile) return;
+    const useBackend = searchBackendEnabled() && !imageFile;
     setPhase("reading");
     setResult(null);
     const started = performance.now();
@@ -75,9 +117,33 @@ export default function Search() {
       }
     }
     setPhase("ranking");
-    // Give the UI one paint between phases; the work below is synchronous and fast.
     await new Promise((r) => setTimeout(r, 260));
-    const res = runSearch(products, { query, visual: signals, overrides: {} });
+
+    let res;
+    if (useBackend) {
+      // Backend search is text-only — image search always stays local.
+      const intent = runSearch(products, { query, visual: null, overrides: {} }).intent;
+      const backendRes = await searchProducts({
+        q: query.trim(),
+        category: intent.category || undefined,
+        subcategory: intent.subcategory || undefined,
+        limit: 50,
+      });
+      if (!backendRes) {
+        throw new Error("Backend search returned no data");
+      }
+      const results = (backendRes.results || []).map(toFrontendProduct);
+      res = {
+        results: results.map((p) => ({ product: p, score: 0, signals: ["backend match"], colourFromImage: false })),
+        intent,
+        excluded: { price: 0, category: 0, colour: 0, stock: 0, status: 0 },
+        weights: { text: 1, image: 0 },
+        no_results: results.length === 0,
+      };
+    } else {
+      const resLocal = runSearch(products, { query, visual: signals, overrides: {} });
+      res = resLocal;
+    }
     const ms = Math.round(performance.now() - started);
     setDuration(ms);
     setInterpretation(res.intent);

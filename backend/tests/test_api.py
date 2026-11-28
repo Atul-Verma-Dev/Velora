@@ -142,11 +142,28 @@ def test_search_products_empty_query():
 def test_log_search_event():
     resp = client.post(
         "/api/v1/search/log",
-        params={
+        json={
             "query": "kurta",
             "has_image": False,
             "result_count": 5,
+            "excluded": {"price": 2, "category": 1},
             "duration_ms": 42,
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "id" in data
+
+
+def test_log_search_event_missing_query():
+    """An empty query is still accepted (defaults to empty string)."""
+    resp = client.post(
+        "/api/v1/search/log",
+        json={
+            "has_image": True,
+            "result_count": 0,
+            "excluded": {},
+            "duration_ms": 0,
         },
     )
     assert resp.status_code == 200
@@ -224,3 +241,74 @@ def test_recommendation_session_uniqueness():
     # Different sessions produce different recommendation IDs
     assert ids_1 != ids_2
     assert not (ids_1 & ids_2), "Recommendation IDs must not collide across sessions"
+
+
+def test_place_order_success():
+    resp = client.post(
+        "/api/v1/orders",
+        json={
+            "user_id": "user-demo",
+            "customer_name": "Aarav Mehta",
+            "contact": "+91 98765 43210",
+            "address": "123 MG Road, Bengaluru 560001",
+            "payment": "UPI (demo)",
+            "delivery": "Standard delivery · free",
+            "items": [
+                {"sku": "VLR-1001", "size": "M", "qty": 1},
+            ],
+            "subtotal": 1499,
+            "discount": 0,
+            "shipping": 0,
+            "total": 1499,
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["id"].startswith("VLR-")
+    assert data["status"] == "Processing"
+    assert data["total"] == 1499
+    assert data["customer_name"] == "Aarav Mehta"
+
+
+def test_place_order_insufficient_stock():
+    resp = client.post(
+        "/api/v1/orders",
+        json={
+            "user_id": "user-demo",
+            "customer_name": "Aarav Mehta",
+            "contact": "+91 98765 43210",
+            "address": "123 MG Road, Bengaluru 560001",
+            "payment": "UPI (demo)",
+            "delivery": "Standard delivery · free",
+            "items": [
+                {"sku": "VLR-1001", "size": "M", "qty": 99999},
+            ],
+            "subtotal": 1499,
+            "discount": 0,
+            "shipping": 0,
+            "total": 1499,
+        },
+    )
+    assert resp.status_code == 409
+
+
+def test_place_order_nonexistent_product():
+    resp = client.post(
+        "/api/v1/orders",
+        json={
+            "user_id": "user-demo",
+            "customer_name": "Aarav Mehta",
+            "contact": "+91 98765 43210",
+            "address": "123 MG Road, Bengaluru 560001",
+            "payment": "UPI (demo)",
+            "delivery": "Standard delivery · free",
+            "items": [
+                {"sku": "NONEXISTENT", "size": "M", "qty": 1},
+            ],
+            "subtotal": 1499,
+            "discount": 0,
+            "shipping": 0,
+            "total": 1499,
+        },
+    )
+    assert resp.status_code == 404

@@ -46,3 +46,11 @@ class SearchResponse(BaseModel):
     excluded: dict
     weights: dict
     no_results: bool
+
+
+class SearchLogRequest(BaseModel):
+    query: str = ""
+    has_image: bool = False
+    result_count: int = Field(default=0, ge=0)
+    excluded: dict = Field(default_factory=dict)
+    duration_ms: int = Field(default=0, ge=0)

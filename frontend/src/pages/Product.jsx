@@ -9,6 +9,7 @@ import { useApp } from "../store/AppStore.jsx";
 import { stockForSize } from "../data/catalog.js";
 import { discountPct, findProduct, money, pincodeEta, productPath } from "../lib/format.js";
 import { fitProfileFor, garmentSpec, sizeChart } from "../lib/fit.js";
+import { fitRecommend, backendEnabled as fitBackendEnabled } from "../lib/api/fit.js";
 import { reviewSummary } from "../data/reviews.js";
 import ProductCard from "../components/ProductCard.jsx";
 import {
@@ -106,6 +107,9 @@ export default function Product() {
   const [reviewOpen, setReviewOpen] = useState(false);
   const [flagOpen, setFlagOpen] = useState(false);
   const [flagReason, setFlagReason] = useState("Spam or promotional content");
+  const [backendFitLoading, setBackendFitLoading] = useState(false);
+  const [backendFitError, setBackendFitError] = useState(null);
+  const [backendFitResult, setBackendFitResult] = useState(null);
 
   const productId = product?.id;
   useEffect(() => {
@@ -118,6 +122,42 @@ export default function Product() {
     if (productId) markViewed(productId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [productId, markViewed]);
+
+  // Fetch a backend fit recommendation when backend mode is explicitly enabled.
+  useEffect(() => {
+    if (!fitBackendEnabled() || !fitProfile || !product) {
+      setBackendFitResult(null);
+      setBackendFitError(null);
+      return;
+    }
+    let cancelled = false;
+    setBackendFitLoading(true);
+    setBackendFitError(null);
+    const profile = {
+      height: Number(fitProfile.height) || 170,
+      weight: Number(fitProfile.weight) || 68,
+      shape: fitProfile.shape,
+      anchor_brand: fitProfile.anchorBrand,
+      usual_size: fitProfile.usualSize,
+      fit_preference: fitProfile.fitPreference,
+      mode: fitProfile.mode || "fast",
+      measurements: fitProfile.measurements || null,
+    };
+    fitRecommend(product.id, profile)
+      .then((data) => {
+        if (!cancelled) {
+          setBackendFitResult(data?.recommendation || null);
+          setBackendFitLoading(false);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setBackendFitError(err.message);
+          setBackendFitLoading(false);
+        }
+      });
+    return () => { cancelled = true; };
+  }, [fitBackendEnabled(), fitProfile, product]);
 
   if (!product) {
     return (
@@ -137,7 +177,7 @@ export default function Product() {
   const off = discountPct(product.price, product.mrp);
   const wished = wishlist.includes(product.id);
   const sizeStock = stockForSize(product, size);
-  const fit = fitProfileFor(product, fitProfile);
+  const fit = fitBackendEnabled() ? backendFitResult : fitProfileFor(product, fitProfile);
   const chart = sizeChart(product);
   const seller = product.sellerName;
   const deliveredOrder = orders.find(
@@ -308,6 +348,12 @@ export default function Product() {
                 <Ruler size={13} /> Your fit profile suggests <b>{fit.size}</b>.{" "}
                 {size !== fit.size && <button type="button" onClick={() => setSize(fit.size)}>Use {fit.size}</button>}
               </p>
+            )}
+            {fitBackendEnabled() && backendFitLoading && (
+              <p className="fit-hint-inline"><Ruler size={13} /> Fetching fit recommendation from server…</p>
+            )}
+            {fitBackendEnabled() && backendFitError && !backendFitLoading && (
+              <p className="fit-hint-inline is-error"><Ruler size={13} /> Fit recommendation unavailable: {backendFitError}</p>
             )}
             <div className="stock-line">
               {sizeStock > 0 ? (

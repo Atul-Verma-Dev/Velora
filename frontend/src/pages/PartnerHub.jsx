@@ -11,7 +11,7 @@ import { useApp } from "../store/AppStore.jsx";
 import { stockForSize } from "../data/catalog.js";
 import { money, formatDate } from "../lib/format.js";
 import { floorPrice, offerPrice, tierFor, visualCompatibility } from "../lib/ctl.js";
-import { sellerMetrics, backendEnabled as sellerBackendEnabled } from "../lib/api/seller.js";
+import { sellerMetrics, sellerLiquidation, backendEnabled as sellerBackendEnabled } from "../lib/api/seller.js";
 import {
   Badge, Btn, Chip, EmptyState, Field, InfoNote, Modal, PageHead, Progress, Stat,
   StatusPill, Tabs,
@@ -351,6 +351,34 @@ export default function PartnerHub() {
     moderateSeller, adjustStock, ledger, config, updateSeller, notify, can, role, updateOrderStatus,
   } = useApp();
   const nav = useNavigate();
+  const [backendSellerMetrics, setBackendSellerMetrics] = useState(null);
+  const [backendLiquidation, setBackendLiquidation] = useState(null);
+
+  // Map a backend liquidation/aging row to the frontend product shape
+  // used by the PartnerHub tables and stat cards.
+  function toPartnerProduct(row) {
+    return {
+      id: row.sku,
+      name: row.name,
+      brand: row.brand,
+      category: row.category,
+      subcategory: row.subcategory,
+      color: row.colour || "",
+      image: row.image_url || "",
+      price: Number(row.price || 0),
+      mrp: Number(row.mrp || 0),
+      stock: Number(row.stock || 0),
+      sellerId: row.seller_id || SELLER_ID,
+      sizes: ["One size"],
+      stockAgeDays: Number(row.days_in_inventory || 0),
+      unitsSold30d: Number(row.units_sold_30d || 0),
+      cogs: Number(row.cogs || 0),
+      marginalShipping: Number(row.marginal_shipping || 45),
+      colorHex: row.colour_hex || "#cccccc",
+      images: row.images || [row.image_url],
+    };
+  }
+
   const seller = sellers.find((s) => s.id === SELLER_ID) || sellers[0];
   const mine = products.filter((p) => p.sellerId === SELLER_ID);
   const live = mine.filter((p) => p.status === "live");
@@ -366,7 +394,8 @@ export default function PartnerHub() {
   const lowStock = mine.filter((p) => p.stock > 0 && p.stock <= 8);
   const outOfStock = mine.filter((p) => p.stock === 0);
   const rejected = mine.filter((p) => p.status === "rejected");
-  const aging = live.filter((p) => p.stockAgeDays >= 60 && p.stock > 0);
+  const backendAgingList = backendLiquidation ? (backendLiquidation.results || backendLiquidation || []).map(toPartnerProduct) : [];
+  const aging = sellerBackendEnabled() ? backendAgingList : live.filter((p) => p.stockAgeDays >= 60 && p.stock > 0);
   const grossSales = myOrders.filter((o) => !["Cancelled"].includes(o.status)).reduce((s, o) => s + sellerTotal(o), 0);
   const myReviews = useMemo(
     () => Object.entries(reviews).flatMap(([pid, list]) =>
@@ -389,18 +418,18 @@ export default function PartnerHub() {
   ]);
   const [newMember, setNewMember] = useState({ email: "", role: "Catalogue manager" });
   const [settingsDraft, setSettingsDraft] = useState({ orderAlerts: true, lowStockAlerts: true, payoutAlerts: true, returnAlerts: true, weeklyDigest: false });
-  const [backendSellerMetrics, setBackendSellerMetrics] = useState(null);
 
   useEffect(() => {
-    if (section !== "complete-the-look" || !sellerBackendEnabled()) return;
+    if (!sellerBackendEnabled()) return;
     let cancelled = false;
-    sellerMetrics(SELLER_ID).then((data) => {
-      if (!cancelled) setBackendSellerMetrics(data);
-    }).catch(() => {
+    Promise.all([
+      sellerMetrics(SELLER_ID).then((d) => { if (!cancelled) setBackendSellerMetrics(d); }),
+      sellerLiquidation(SELLER_ID, 60).then((d) => { if (!cancelled) setBackendLiquidation(d); }),
+    ]).catch(() => {
       // Backend unavailable — local stats remain the source of truth.
     });
     return () => { cancelled = true; };
-  }, [section, SELLER_ID]);
+  }, [SELLER_ID]);
 
   const filteredCatalogue = mine.filter((p) => {
     const statusOk =

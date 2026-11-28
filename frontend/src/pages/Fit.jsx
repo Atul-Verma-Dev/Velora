@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import {
   AlertCircle, ArrowRight, Camera, Check, Info, Lock, Ruler, ScanFace, ShieldCheck,
@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import { useApp } from "../store/AppStore.jsx";
 import { estimateBody, fitProfileFor, garmentSpec, recommend, sizeChart, toIn } from "../lib/fit.js";
+import { fitRecommend, backendEnabled as fitBackendEnabled } from "../lib/api/fit.js";
 import { money } from "../lib/format.js";
 import { Badge, Breadcrumbs, Btn, Field, InfoNote, PageHead, Progress } from "../components/ui.jsx";
 
@@ -54,6 +55,9 @@ export default function Fit() {
   const [sidePreview, setSidePreview] = useState("");
   const [errors, setErrors] = useState({});
   const [saved, setSaved] = useState(Boolean(fitProfile));
+  const [backendFitLoading, setBackendFitLoading] = useState(false);
+  const [backendFitError, setBackendFitError] = useState(null);
+  const [backendFitResult, setBackendFitResult] = useState(null);
   const [productId, setProductId] = useState(
     products.find((p) => p.status === "live" && p.category !== "Accessories")?.id || ""
   );
@@ -95,8 +99,56 @@ export default function Fit() {
     return { ...estimateBody(form), footLengthCm: 22.5 + ((parseInt(form.usualSize, 10) || 4) - 1) * 0.85, source: "estimate" };
   }, [form, mode]);
 
+  // Map the local form shape to the backend FitProfileIn schema.
+  const backendProfile = useMemo(() => ({
+    height: Number(form.height) || 170,
+    weight: Number(form.weight) || 68,
+    shape: form.shape,
+    anchor_brand: form.anchorBrand,
+    usual_size: form.usualSize,
+    fit_preference: form.fitPreference,
+    mode,
+    measurements: mode === "precision"
+      ? {
+          chest: Number(form.measurements.chest) || 96,
+          waist: Number(form.measurements.waist) || 82,
+          hip: Number(form.measurements.hip) || 100,
+          footLengthCm: Number(form.measurements.footLengthCm) || 27,
+        }
+      : null,
+  }), [form, mode]);
+
   const activeProduct = products.find((p) => p.id === productId);
-  const recommendation = activeProduct ? recommend(activeProduct, body, form.fitPreference) : null;
+
+  // Fetch a backend fit recommendation when backend mode is explicitly enabled.
+  // Local calculation remains the default when the flag is off.
+  useEffect(() => {
+    if (!fitBackendEnabled() || !activeProduct) {
+      setBackendFitResult(null);
+      setBackendFitError(null);
+      return;
+    }
+    let cancelled = false;
+    setBackendFitLoading(true);
+    setBackendFitError(null);
+    fitRecommend(activeProduct.id, backendProfile)
+      .then((data) => {
+        if (!cancelled) {
+          setBackendFitResult(data?.recommendation || null);
+          setBackendFitLoading(false);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setBackendFitError(err.message);
+          setBackendFitLoading(false);
+        }
+      });
+    return () => { cancelled = true; };
+  }, [fitBackendEnabled(), activeProduct, backendProfile]);
+  const recommendation = backendFitResult
+    ? backendFitResult
+    : (activeProduct ? recommend(activeProduct, body, form.fitPreference) : null);
 
   return (
     <main id="main" className="page-shell fit-page">
@@ -257,48 +309,74 @@ export default function Fit() {
             </label>
           </div>
 
-          {activeProduct && recommendation && (
-            <div className="fit-reco">
-              <div className="fit-reco-main">
-                <img src={activeProduct.image} alt={activeProduct.name} />
-                <div>
-                  <Link to={`/product/${activeProduct.id}`} className="text-link">{activeProduct.name} <ArrowRight size={13} /></Link>
-                  <small>{activeProduct.category} · {activeProduct.fit} · {money(activeProduct.price)}</small>
-                  <div className="reco-size">
-                    <span>Suggested size</span>
-                    <b>{recommendation.size}</b>
-                    <Badge tone={recommendation.confidence === "Good match" ? "success" : recommendation.confidence === "Close call" ? "warning" : "soft"}>
-                      {recommendation.confidence}
-                    </Badge>
+          {activeProduct && (
+            <>
+              {fitBackendEnabled() && backendFitLoading && (
+                <div className="fit-reco">
+                  <div className="fit-reco-main">
+                    <img src={activeProduct.image} alt={activeProduct.name} />
+                    <div>
+                      <Link to={`/product/${activeProduct.id}`} className="text-link">{activeProduct.name} <ArrowRight size={13} /></Link>
+                      <p className="reco-explanation">Fetching fit recommendation from the server…</p>
+                    </div>
                   </div>
-                  <p className="reco-explanation">{recommendation.explanation}</p>
-                  <div className="fit-zones">
-                    {recommendation.zones.map((z) => (
-                      <span key={z.zone} className={`fit-zone tone-${z.tone}`}><small>{z.zone}</small><b>{z.fit}</b></span>
-                    ))}
-                  </div>
-                  <div className="reco-actions">
-                    <Btn to={`/product/${activeProduct.id}`} variant="dark" size="sm">View product</Btn>
-                    <span>{activeProduct.sizes.map((s) => `${s}${s === recommendation.size ? " ✓" : ""}`).join(" · ")}</span>
-                  </div>
-                  <p className="fit-disclaimer"><AlertCircle size={12} /> {recommendation.note}</p>
                 </div>
-              </div>
-              <div className="fit-reco-chart">
-                <span className="eyebrow">GARMENT MEASUREMENTS</span>
-                <table className="data-table">
-                  <thead><tr>{sizeChart(activeProduct).headers.map((h) => <th key={h}>{h}</th>)}</tr></thead>
-                  <tbody>
-                    {sizeChart(activeProduct).rows.map((row, i) => (
-                      <tr key={i} className={row[0] === recommendation.size ? "selected-row" : ""}>
-                        {row.map((c, j) => <td key={j}>{c}</td>)}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                <small>{sizeChart(activeProduct).note}</small>
-              </div>
-            </div>
+              )}
+              {fitBackendEnabled() && backendFitError && !backendFitLoading && (
+                <div className="fit-reco">
+                  <div className="fit-reco-main">
+                    <img src={activeProduct.image} alt={activeProduct.name} />
+                    <div>
+                      <Link to={`/product/${activeProduct.id}`} className="text-link">{activeProduct.name} <ArrowRight size={13} /></Link>
+                      <p className="reco-explanation is-error">Fit recommendation unavailable: {backendFitError}</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+              {(!fitBackendEnabled() || (!backendFitLoading && !backendFitError && backendFitResult)) && recommendation && (
+                <div className="fit-reco">
+                  <div className="fit-reco-main">
+                    <img src={activeProduct.image} alt={activeProduct.name} />
+                    <div>
+                      <Link to={`/product/${activeProduct.id}`} className="text-link">{activeProduct.name} <ArrowRight size={13} /></Link>
+                      <small>{activeProduct.category} · {activeProduct.fit} · {money(activeProduct.price)}</small>
+                      <div className="reco-size">
+                        <span>Suggested size</span>
+                        <b>{recommendation.size}</b>
+                        <Badge tone={recommendation.confidence === "Good match" ? "success" : recommendation.confidence === "Close call" ? "warning" : "soft"}>
+                          {recommendation.confidence}
+                        </Badge>
+                      </div>
+                      <p className="reco-explanation">{recommendation.explanation}</p>
+                      <div className="fit-zones">
+                        {recommendation.zones.map((z) => (
+                          <span key={z.zone} className={`fit-zone tone-${z.tone}`}><small>{z.zone}</small><b>{z.fit}</b></span>
+                        ))}
+                      </div>
+                      <div className="reco-actions">
+                        <Btn to={`/product/${activeProduct.id}`} variant="dark" size="sm">View product</Btn>
+                        <span>{activeProduct.sizes.map((s) => `${s}${s === recommendation.size ? " ✓" : ""}`).join(" · ")}</span>
+                      </div>
+                      <p className="fit-disclaimer"><AlertCircle size={12} /> {recommendation.note}</p>
+                    </div>
+                  </div>
+                  <div className="fit-reco-chart">
+                    <span className="eyebrow">GARMENT MEASUREMENTS</span>
+                    <table className="data-table">
+                      <thead><tr>{sizeChart(activeProduct).headers.map((h) => <th key={h}>{h}</th>)}</tr></thead>
+                      <tbody>
+                        {sizeChart(activeProduct).rows.map((row, i) => (
+                          <tr key={i} className={row[0] === recommendation.size ? "selected-row" : ""}>
+                            {row.map((c, j) => <td key={j}>{c}</td>)}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    <small>{sizeChart(activeProduct).note}</small>
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </section>
       )}

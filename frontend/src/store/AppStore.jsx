@@ -4,6 +4,8 @@ import { offerPrice, offerStillValid } from "../lib/ctl.js";
 import { seedOrders, seedSellerApplications, sellerSeedOrders } from "../data/orders.js";
 import { seedReviews } from "../data/reviews.js";
 import { couponValue, formatDate, linePrice, shippingFor } from "../lib/format.js";
+import { getProducts, toFrontendProduct, backendEnabled as productsBackendEnabled } from "../lib/api/products.js";
+import { placeOrder as placeOrderApi } from "../lib/api/orders.js";
 
 const KEY = "velora-v1";
 const load = (name, fallback) => {
@@ -49,6 +51,7 @@ export const useApp = () => useContext(AppCtx);
 
 export function AppProvider({ children }) {
   const [products, setProducts] = useState(() => load("products", seedProducts));
+  const [productsLoading, setProductsLoading] = useState(false);
   const [cart, setCart] = useState(() => load("cart", []));
   const [wishlist, setWishlist] = useState(() => load("wishlist", []));
   const [orders, setOrders] = useState(() => load("orders", [...seedOrders, ...sellerSeedOrders]));
@@ -107,6 +110,24 @@ export function AppProvider({ children }) {
   useEffect(() => save("coupon", coupon), [coupon]);
 
   useEffect(() => () => clearTimeout(toastTimer.current), []);
+
+  // Backend product catalogue — loads live listings from the API when the
+  // flag is enabled. Falls back to local seed data otherwise.
+  useEffect(() => {
+    if (!productsBackendEnabled()) return;
+    let cancelled = false;
+    setProductsLoading(true);
+    getProducts({ status: "live", limit: 200 }).then((data) => {
+      if (cancelled) return;
+      const items = (data && data.items) || [];
+      setProducts(items.map(toFrontendProduct));
+      setProductsLoading(false);
+    }).catch(() => {
+      // Backend unavailable — local seed data remains the source of truth.
+      setProductsLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, []);
 
   const notify = useCallback((message, tone = "default") => {
     setToast({ message, tone, id: Date.now() });
@@ -223,8 +244,93 @@ export function AppProvider({ children }) {
   }, []);
 
   // ---- checkout --------------------------------------------------------
-  const placeOrder = useCallback(({ address, payment, delivery, contact, coupon: couponArg }) => {
+  const placeOrder = useCallback(async ({ address, payment, delivery, contact, coupon: couponArg }) => {
     if (!cart.length) return null;
+
+    if (productsBackendEnabled()) {
+      // Backend path: place the order server-side, then reconcile local state.
+      const invalid = cart.find((line) => {
+        const p = products.find((x) => x.id === line.productId);
+        return !p || p.status !== "live" || Math.min(p.stock, stockForSize(p, line.size)) < line.qty;
+      });
+      if (invalid) {
+        notify("Stock changed while you were checking out. Please review your bag.", "error");
+        return null;
+      }
+      const staleOffer = cart.find((line) => line.offer && !offerStillValid(products.find((x) => x.id === line.productId), line, config));
+      if (staleOffer) {
+        notify("A Complete the Look offer in your bag has expired. Remove it and try again.", "error");
+        return null;
+      }
+      const subtotal = cart.reduce((s, l) => s + linePrice(l, products.find((x) => x.id === l.productId)) * l.qty, 0);
+      const discount = couponValue(couponArg || coupon, subtotal);
+      const ship = delivery?.price ?? shippingFor(subtotal);
+      const backendItems = cart.map((l) => {
+        const p = products.find((x) => x.id === l.productId);
+        return { sku: p.id, size: l.size, qty: l.qty };
+      });
+      try {
+        const placed = await placeOrderApi({
+          user_id: user.id,
+          customer_name: user.name,
+          contact: contact || address.phone,
+          address: `${address.line1}, ${address.line2 ? address.line2 + ", " : ""}${address.city} ${address.pincode}`,
+          payment: payment || "Cash on delivery (demo)",
+          delivery: delivery?.label || "Standard delivery · free",
+          items: backendItems,
+          subtotal,
+          discount,
+          shipping: ship,
+          total: subtotal - discount + ship,
+        });
+        if (!placed) return null;
+        const orderId = placed.id;
+        // Reconcile local state with the server-placed order.
+        setCart([]);
+        setCoupon(null);
+        setOrders((old) => [
+          {
+            id: orderId,
+            date: formatDate(),
+            placedAt: placed.placed_at || new Date().toISOString().slice(0, 10),
+            status: placed.status || "Processing",
+            payment: placed.payment,
+            address: placed.address,
+            contact: placed.contact,
+            delivery: placed.delivery_label,
+            subtotal: placed.subtotal,
+            discount: placed.discount,
+            shipping: placed.shipping,
+            total: placed.total,
+            userId: user.id,
+            items: cart.map((l) => {
+              const p = products.find((x) => x.id === l.productId);
+              return {
+                id: p.id, name: p.name, brand: p.brand, price: linePrice(l, p), qty: l.qty, offer: Boolean(l.offer),
+                size: l.size, colour: p.color, image: p.image,
+                sellerId: p.sellerId, sellerName: p.sellerName,
+              };
+            }),
+            tracking: [
+              { label: "Order placed", date: `${formatDate()}, now`, done: true },
+              { label: "Awaiting seller acceptance", date: "Within 24 hours", done: false },
+              { label: "Packed", date: "—", done: false },
+              { label: "Shipped", date: "—", done: false },
+              { label: "Delivered", date: "—", done: false },
+            ],
+          },
+          ...old,
+        ]);
+        log("Order placed", orderId, `${cart.length} line(s) · ${placed.payment}`, "Shopper");
+        notify("Order placed — demo checkout, no payment was taken.");
+        return { id: orderId };
+      } catch (err) {
+        notify(`Order failed: ${err.message}`, "error");
+        return null;
+      }
+    }
+
+    // Local path — unchanged demo behaviour.
     const invalid = cart.find((line) => {
       const p = products.find((x) => x.id === line.productId);
       return !p || p.status !== "live" || Math.min(p.stock, stockForSize(p, line.size)) < line.qty;
@@ -294,7 +400,7 @@ export function AppProvider({ children }) {
     log("Order placed", order.id, `${items.length} line(s) · ${order.payment}`, "Shopper");
     notify("Order placed — demo checkout, no payment was taken.");
     return order;
-  }, [cart, products, config, coupon, user, notify, log]);
+  }, [cart, products, config, coupon, user, notify, log, productsBackendEnabled, placeOrderApi]);
 
   const updateOrderStatus = useCallback((orderId, status, note) => {
     setOrders((old) =>
@@ -514,7 +620,7 @@ export function AppProvider({ children }) {
   }, [notify]);
 
   const value = useMemo(() => ({
-    products, setProducts, cart, wishlist, orders, reviews, role, adminRole, setAdminRole,
+    products, productsLoading, setProducts, cart, wishlist, orders, reviews, role, adminRole, setAdminRole,
     user, fitProfile, addresses, sellers, applications, config, audit, searchLog, ledger,
     recentlyViewed, recentSearches, toast, notify, log,
     addToCart, updateQty, removeLine, toggleWish, moveToWishlist, clearCart, markViewed,
@@ -529,7 +635,7 @@ export function AppProvider({ children }) {
       window.location.href = "/";
     },
   }), [
-    products, cart, wishlist, orders, reviews, role, adminRole, user, fitProfile, addresses,
+    products, productsLoading, cart, wishlist, orders, reviews, role, adminRole, user, fitProfile, addresses,
     sellers, applications, config, audit, searchLog, ledger, recentlyViewed, recentSearches,
     toast, notify, log, addToCart, updateQty, removeLine, toggleWish, moveToWishlist, clearCart,
     markViewed, placeOrder, updateOrderStatus, requestReturn, addReview, moderateReview,
