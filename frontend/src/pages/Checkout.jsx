@@ -7,6 +7,7 @@ import {
 import { useApp } from "../store/AppStore.jsx";
 import { couponValue, linePrice, money, shippingFor, FREE_SHIPPING_THRESHOLD } from "../lib/format.js";
 import { isBackendEnabled } from "../lib/api/client.js";
+import { offerReferencesFromCart } from "../lib/api/offerRefs.js";
 import { Badge, Breadcrumbs, Btn, EmptyState, Field, InfoNote, PageHead } from "../components/ui.jsx";
 
 const STEPS = [
@@ -134,17 +135,12 @@ export default function Checkout() {
       price: shipping,
     };
 
-    // If backend mode is on, forward the accepted Complete the Look offers
-    // that the cart accepted earlier via the backend acceptBundle call.
+    // If backend mode is on, forward the Complete the Look offers the cart
+    // accepted earlier via the backend acceptBundle call. Only lines that still
+    // carry a valid persisted recommendation id are sent.
     let backendOfferReferences = null;
     if (backendMode) {
-      backendOfferReferences = cart
-        .filter((l) => l.offer && l.recommendationId != null)
-        .map((l) => ({
-          recommendation_id: Number(l.recommendationId),
-          sku: l.productId,
-          size: l.size,
-        }));
+      backendOfferReferences = offerReferencesFromCart(cart);
     }
 
     const result = await placeOrder({

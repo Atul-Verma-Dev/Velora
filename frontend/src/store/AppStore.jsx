@@ -1,6 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { products as seedProducts, defaultAddresses, sellers as seedSellers, stockForSize, ensureSizeStock, sumSizeStock } from "../data/catalog.js";
 import { offerPrice, offerStillValid } from "../lib/ctl.js";
+import { isValidRecommendationRef, offerReferencesFromCart } from "../lib/api/offerRefs.js";
 import { seedOrders, seedSellerApplications, sellerSeedOrders } from "../data/orders.js";
 import { seedReviews } from "../data/reviews.js";
 import { couponValue, formatDate, linePrice, shippingFor } from "../lib/format.js";
@@ -174,6 +175,12 @@ export function AppProvider({ children }) {
       notify("This piece is already in your bag as a Complete the Look offer (one per order).", "error");
       return false;
     }
+    // A backend Complete the Look offer is only redeemable at checkout when the
+    // persisted recommendation id travels with the cart line.
+    const offerRecommendationId =
+      opts.offer && Number.isInteger(Number(opts.recommendationId)) && Number(opts.recommendationId) > 0
+        ? Number(opts.recommendationId)
+        : null;
     let unitPrice = product.price;
     if (opts.offer) {
       const quote = offerPrice(product, config);
@@ -201,7 +208,18 @@ export function AppProvider({ children }) {
     setCart((old) =>
       existing
         ? old.map((l) => (`${l.productId}::${l.size}` === key ? { ...l, qty: wanted } : l))
-        : [...old, { productId: id, size: chosen, qty, price: unitPrice, ...(opts.offer ? { offer: true } : {}) }]
+        : [
+            ...old,
+            {
+              productId: id,
+              size: chosen,
+              qty,
+              price: unitPrice,
+              ...(opts.offer
+                ? { offer: true, ...(offerRecommendationId ? { recommendationId: offerRecommendationId } : {}) }
+                : {}),
+            },
+          ]
     );
     notify(opts.offer ? `Added at your offer price · ${product.name}` : `Added to bag · ${product.name}`);
     return true;
@@ -277,17 +295,9 @@ export function AppProvider({ children }) {
 
   // Validate CTL offers before submitting them.
   // Backend recommendations must have a real persisted ID.
-  const invalidOffer = cart.find((line) => {
-    if (!line.offer) return false;
-
-    const recommendationId = Number(line.recommendationId);
-
-    return (
-      !Number.isInteger(recommendationId) ||
-      recommendationId <= 0 ||
-      line.qty !== 1
-    );
-  });
+  const invalidOffer = cart.find(
+    (line) => line.offer && (!isValidRecommendationRef(line) || line.qty !== 1)
+  );
 
   if (invalidOffer) {
     notify(
@@ -329,21 +339,12 @@ export function AppProvider({ children }) {
     };
   });
 
-  // Send only persisted recommendation references.
-  // Never send a client-controlled offer price.
-  const offerReferences = cart
-    .filter((line) => line.offer)
-    .map((line) => {
-      const product = products.find(
-        (item) => item.id === line.productId
-      );
-
-      return {
-        recommendation_id: Number(line.recommendationId),
-        sku: product.id,
-        size: line.size,
-      };
-    });
+  // Offer references are built from the recommendationId persisted on the cart
+  // line. Never send a client-controlled offer price. Checkout passes the same
+  // references; fall back to the cart when a caller omits them.
+  const offerRefsForOrder = Array.isArray(offerReferences)
+    ? offerReferences
+    : offerReferencesFromCart(cart);
 
   // Convert the UI delivery object into the backend allowlist.
   const deliveryMethod =
@@ -380,7 +381,7 @@ export function AppProvider({ children }) {
 
       items: backendItems,
 
-      offer_references: offerReferences || [],
+      offer_references: offerRefsForOrder,
 
       // The backend validates the coupon and calculates
       // the discount independently.

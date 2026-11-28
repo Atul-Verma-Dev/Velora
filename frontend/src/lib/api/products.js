@@ -74,6 +74,10 @@ export function toFrontendProduct(row) {
     fabric: row.fabric || "",
     pattern: row.pattern || "",
     fit: row.fit || "",
+    // The fit engine compares finished measurements against the intended ease
+    // and fabric stretch, so keep the API values instead of defaulting them.
+    fitEase: row.fit_ease || "regular",
+    stretch: row.stretch || "low",
     length: row.length || "",
     description: row.description || "",
     tags: row.tags || [],

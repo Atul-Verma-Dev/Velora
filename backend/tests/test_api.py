@@ -629,6 +629,54 @@ def test_ctl_valid_accepted_recommendation_succeeds(test_user_id, cleanup_test_o
         _delete_ctl_recommendation(rec_id)
 
 
+def test_ctl_order_links_acceptance_event(test_user_id, cleanup_test_orders):
+    """A redeemed offer becomes a stored bundle_acceptance_event for the order.
+
+    This is the link the seller liquidation summary relies on: the accepted
+    recommendation must be recorded against the persisted order, not merely
+    marked accepted in the cart.
+    """
+    rec_id = _make_ctl_recommendation(cart_sku="VLR-1001", cand_sku="VLR-1004", size="S", price=1200)
+    try:
+        resp = client.post(
+            "/api/v1/orders",
+            json={
+                "user_id": test_user_id,
+                "customer_name": "CTL Tester",
+                "contact": "+91 99999 99999",
+                "address": "123 CTL Street, Mumbai 400001",
+                "payment": "UPI (demo)",
+                "delivery": "standard",
+                "items": [
+                    {"sku": "VLR-1001", "size": "S", "qty": 1},
+                    {"sku": "VLR-1002", "size": "S", "qty": 1},
+                    {"sku": "VLR-1004", "size": "S", "qty": 1},
+                ],
+                "offer_references": [
+                    {"recommendation_id": rec_id, "sku": "VLR-1004", "size": "S"},
+                ],
+            },
+        )
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+        order_id = resp.json()["id"]
+
+        with db_cursor() as cur:
+            cur.execute(
+                """
+                SELECT recommendation_id, order_id
+                FROM bundle_acceptance_events
+                WHERE recommendation_id = %s
+                """,
+                (rec_id,),
+            )
+            event = cur.fetchone()
+
+        assert event is not None, "A redeemed offer must create a bundle_acceptance_event"
+        assert event["order_id"] == order_id
+    finally:
+        _delete_ctl_recommendation(rec_id)
+
+
 def test_ctl_incorrect_recommendation_id_fails(test_user_id, cleanup_test_orders):
     """A non-existent recommendation ID returns 404."""
     resp = client.post(

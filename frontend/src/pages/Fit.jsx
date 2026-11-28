@@ -5,7 +5,8 @@ import {
   Sparkles, Trash2, UserRound, Wand2,
 } from "lucide-react";
 import { useApp } from "../store/AppStore.jsx";
-import { estimateBody, fitProfileFor, garmentSpec, recommend, sizeChart, toIn } from "../lib/fit.js";
+import { products as seedProducts } from "../data/catalog.js";
+import { estimateBody, estimateFootLength, garmentSpec, orderSizes, recommend, sizeChart, toIn } from "../lib/fit.js";
 import { fitRecommend, backendEnabled as fitBackendEnabled } from "../lib/api/fit.js";
 import { money } from "../lib/format.js";
 import { Badge, Breadcrumbs, Btn, Field, InfoNote, PageHead, Progress } from "../components/ui.jsx";
@@ -13,6 +14,19 @@ import { Badge, Breadcrumbs, Btn, Field, InfoNote, PageHead, Progress } from "..
 const SHAPES = ["Balanced", "Triangle", "Inverted triangle", "Oval", "Hourglass"];
 const BRANDS = ["Zara", "H&M", "Fabindia", "Westside", "Marks & Spencer", "Uniqlo", "Other"];
 const SIZES = ["XS", "S", "M", "L", "XL", "XXL"];
+
+const DEFAULT_FORM = {
+  height: "170", weight: "68", shape: "Balanced", anchorBrand: "Zara",
+  usualSize: "M", fitPreference: "regular", measurements: { chest: "96", waist: "82", hip: "100", footLengthCm: "27" },
+};
+
+// One concrete, reviewable demo scenario for this build. It runs entirely on
+// the local lib/fit.js engine so the result never depends on API_BACKEND state.
+// Deep link: /fit?demo=1&sku=VLR-3001
+const DEMO_FIT = {
+  sku: "VLR-3001",
+  profile: { height: "172", weight: "74", shape: "Hourglass", anchorBrand: "Fabindia", usualSize: "M", fitPreference: "regular" },
+};
 
 function ScanUpload({ label, step, url, onChange }) {
   return (
@@ -42,25 +56,33 @@ function ScanUpload({ label, step, url, onChange }) {
 
 export default function Fit() {
   const { fitProfile, setFitProfile, products, notify } = useApp();
+  // Fit only needs garment attributes, which the seed catalogue and the database
+  // share. Falling back keeps this demo reviewable when the API-backed catalogue
+  // is empty (backend flag on, API not running) — the demo is never hostage to
+  // API_BACKEND state.
+  const catalogue = useMemo(
+    () => (products.length ? products : seedProducts.filter((p) => p.status === "live")),
+    [products]
+  );
   const [params] = useSearchParams();
+  const demoMode = params.get("demo") === "1";
+  const requestedSku = params.get("sku");
   const [mode, setMode] = useState(params.get("mode") === "precision" ? "precision" : "fast");
-  const [form, setForm] = useState(
-    fitProfile || {
-      height: "170", weight: "68", shape: "Balanced", anchorBrand: "Zara",
-      usualSize: "M", fitPreference: "regular", measurements: { chest: "96", waist: "82", hip: "100", footLengthCm: "27" },
-    }
+  const [form, setForm] = useState(() =>
+    fitProfile || (demoMode ? { ...DEFAULT_FORM, ...DEMO_FIT.profile } : DEFAULT_FORM)
   );
   const [photos, setPhotos] = useState({ front: "", side: "" });
   const [frontPreview, setFrontPreview] = useState("");
   const [sidePreview, setSidePreview] = useState("");
   const [errors, setErrors] = useState({});
-  const [saved, setSaved] = useState(Boolean(fitProfile));
+  const [saved, setSaved] = useState(Boolean(fitProfile) || demoMode);
   const [backendFitLoading, setBackendFitLoading] = useState(false);
   const [backendFitError, setBackendFitError] = useState(null);
   const [backendFitResult, setBackendFitResult] = useState(null);
-  const [productId, setProductId] = useState(
-    products.find((p) => p.status === "live" && p.category !== "Accessories")?.id || ""
-  );
+  const [productId, setProductId] = useState(() => {
+    const wanted = requestedSku && catalogue.find((p) => p.id === requestedSku && p.status === "live");
+    return wanted?.id || catalogue.find((p) => p.status === "live" && p.category !== "Accessories")?.id || "";
+  });
 
   const update = (k, v) => setForm((f) => ({ ...f, [k]: v }));
   const updateMeasure = (k, v) => setForm((f) => ({ ...f, measurements: { ...f.measurements, [k]: v } }));
@@ -86,6 +108,17 @@ export default function Fit() {
     notify("Fit profile saved to this browser");
   };
 
+  // Load the reviewable scenario in one click: profile + the real catalogue
+  // product, then reveal the result. No backend call is required.
+  const loadDemo = () => {
+    setMode("fast");
+    setForm((f) => ({ ...f, ...DEMO_FIT.profile }));
+    if (catalogue.some((p) => p.id === DEMO_FIT.sku)) setProductId(DEMO_FIT.sku);
+    setFitProfile({ ...DEMO_FIT.profile, mode: "fast", updatedAt: new Date().toLocaleDateString("en-IN") });
+    setSaved(true);
+    notify(`Demo profile loaded · ${DEMO_FIT.sku}`);
+  };
+
   const body = useMemo(() => {
     if (mode === "precision") {
       return {
@@ -96,7 +129,7 @@ export default function Fit() {
         source: "measured",
       };
     }
-    return { ...estimateBody(form), footLengthCm: 22.5 + ((parseInt(form.usualSize, 10) || 4) - 1) * 0.85, source: "estimate" };
+    return { ...estimateBody(form), footLengthCm: estimateFootLength(form), source: "estimate" };
   }, [form, mode]);
 
   // Map the local form shape to the backend FitProfileIn schema.
@@ -118,7 +151,16 @@ export default function Fit() {
       : null,
   }), [form, mode]);
 
-  const activeProduct = products.find((p) => p.id === productId);
+  const activeProduct = catalogue.find((p) => p.id === productId);
+
+  // Backend mode loads the catalogue asynchronously, so the initially empty
+  // product id is filled once listings arrive. Prefer an explicit ?sku=.
+  useEffect(() => {
+    if (catalogue.some((p) => p.id === productId && p.status === "live")) return;
+    const wanted = requestedSku && catalogue.find((p) => p.id === requestedSku && p.status === "live");
+    const fallback = catalogue.find((p) => p.status === "live" && p.category !== "Accessories");
+    if (wanted?.id || fallback?.id) setProductId(wanted?.id || fallback.id);
+  }, [catalogue, productId, requestedSku]);
 
   // Fetch a backend fit recommendation when backend mode is explicitly enabled.
   // Local calculation remains the default when the flag is off.
@@ -146,9 +188,9 @@ export default function Fit() {
       });
     return () => { cancelled = true; };
   }, [fitBackendEnabled(), activeProduct, backendProfile]);
-  const recommendation = backendFitResult
-    ? backendFitResult
-    : (activeProduct ? recommend(activeProduct, body, form.fitPreference) : null);
+  // The local engine is the demo's source of truth: deterministic, available
+  // without the backend flag, and never hostage to API availability.
+  const recommendation = activeProduct ? recommend(activeProduct, body, form.fitPreference) : null;
 
   return (
     <main id="main" className="page-shell fit-page">
@@ -219,6 +261,7 @@ export default function Fit() {
               </div>
               <div className="fit-form-foot">
                 <Btn variant="dark" onClick={save} icon={<Wand2 size={15} />}>Build my fit profile</Btn>
+                <Btn variant="outline" onClick={loadDemo} icon={<Sparkles size={15} />}>Load demo scenario</Btn>
                 <small><Lock size={12} /> Stored only in this browser. No account, no upload.</small>
               </div>
             </>
@@ -302,7 +345,7 @@ export default function Fit() {
             <label className="field compact-field">
               <span className="field-label">Product</span>
               <select value={productId} onChange={(e) => setProductId(e.target.value)}>
-                {products.filter((p) => p.status === "live").map((p) => (
+                {catalogue.filter((p) => p.status === "live").map((p) => (
                   <option key={p.id} value={p.id}>{p.name} — {p.brand}</option>
                 ))}
               </select>
@@ -311,29 +354,7 @@ export default function Fit() {
 
           {activeProduct && (
             <>
-              {fitBackendEnabled() && backendFitLoading && (
-                <div className="fit-reco">
-                  <div className="fit-reco-main">
-                    <img src={activeProduct.image} alt={activeProduct.name} />
-                    <div>
-                      <Link to={`/product/${activeProduct.id}`} className="text-link">{activeProduct.name} <ArrowRight size={13} /></Link>
-                      <p className="reco-explanation">Fetching fit recommendation from the server…</p>
-                    </div>
-                  </div>
-                </div>
-              )}
-              {fitBackendEnabled() && backendFitError && !backendFitLoading && (
-                <div className="fit-reco">
-                  <div className="fit-reco-main">
-                    <img src={activeProduct.image} alt={activeProduct.name} />
-                    <div>
-                      <Link to={`/product/${activeProduct.id}`} className="text-link">{activeProduct.name} <ArrowRight size={13} /></Link>
-                      <p className="reco-explanation is-error">Fit recommendation unavailable: {backendFitError}</p>
-                    </div>
-                  </div>
-                </div>
-              )}
-              {(!fitBackendEnabled() || (!backendFitLoading && !backendFitError && backendFitResult)) && recommendation && (
+              {recommendation && (
                 <div className="fit-reco">
                   <div className="fit-reco-main">
                     <img src={activeProduct.image} alt={activeProduct.name} />
@@ -353,9 +374,14 @@ export default function Fit() {
                           <span key={z.zone} className={`fit-zone tone-${z.tone}`}><small>{z.zone}</small><b>{z.fit}</b></span>
                         ))}
                       </div>
+                      {recommendation.ranked.length > 1 && (
+                        <p className="fit-disclaimer">
+                          Closest sizes · {recommendation.ranked.map((r) => `${r.size} ${Math.round(r.score * 10) / 10}`).join(" · ")}
+                        </p>
+                      )}
                       <div className="reco-actions">
                         <Btn to={`/product/${activeProduct.id}`} variant="dark" size="sm">View product</Btn>
-                        <span>{activeProduct.sizes.map((s) => `${s}${s === recommendation.size ? " ✓" : ""}`).join(" · ")}</span>
+                        <span>{orderSizes(activeProduct.sizes).map((s) => `${s}${s === recommendation.size ? " ✓" : ""}`).join(" · ")}</span>
                       </div>
                       <p className="fit-disclaimer"><AlertCircle size={12} /> {recommendation.note}</p>
                     </div>
@@ -375,6 +401,18 @@ export default function Fit() {
                     <small>{sizeChart(activeProduct).note}</small>
                   </div>
                 </div>
+              )}
+              {fitBackendEnabled() && (
+                <p className="fit-disclaimer">
+                  <Info size={12} />{" "}
+                  {backendFitLoading
+                    ? "Server cross-check running — the result above comes from the local engine."
+                    : backendFitError
+                      ? `Server cross-check unavailable (${backendFitError}). The local result above is unaffected.`
+                      : backendFitResult
+                        ? `Server cross-check: size ${backendFitResult.size} · ${backendFitResult.confidence}`
+                        : "Server cross-check returned no recommendation."}
+                </p>
               )}
             </>
           )}

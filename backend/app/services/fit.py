@@ -3,6 +3,9 @@
 Advisory only; not a guarantee of measurement accuracy. No camera scanning.
 """
 
+import math
+import re
+
 SIZE_ORDER = ["XS", "S", "M", "L", "XL", "XXL"]
 
 APPAREL_CHEST_IN = {"XS": 33, "S": 35, "M": 37.5, "L": 40, "XL": 43, "XXL": 46}
@@ -14,17 +17,48 @@ EASE_BANDS = {
 }
 STRETCH_BONUS = {"low": 0, "medium": 1.5, "high": 3}
 
+# Per-subcategory cut differences, mirroring frontend src/lib/fit.js. The
+# catalogue shares one body chart, so without this a shirt, a kurta and an
+# oversized top of the same label have identical finished measurements and a
+# mid-size body gets one letter everywhere.
+SUBCATEGORY_FIT = {
+    "Outerwear": 1.5,
+    "Kurta Sets": 0.5,
+    "Co-ords": 0.5,
+    "Dresses": -0.5,
+    "Shirts": -1.0,
+    "Tops & Shirts": -1.5,
+}
+
+
+APPAREL_SUBCATEGORIES = (
+    "Kurta Sets", "Co-ords", "Shirts", "Tops & Shirts", "Dresses", "Knitwear",
+    "Outerwear", "Sarees", "Lehengas", "Anarkalis", "Dupattas",
+)
+BOTTOM_SUBCATEGORIES = ("Trousers", "Denim", "Trousers & Denim")
+
+
+def _size_labels(p: dict) -> list:
+    """Size labels as strings; DB rows carry [{size, stock}] dicts."""
+    return [s["size"] if isinstance(s, dict) else s for s in (p.get("sizes") or [])]
+
+
+def _has_numeric_size_chart(p: dict) -> bool:
+    """Waist-sized bottoms label their sizes with the waist in inches ("26")."""
+    labels = _size_labels(p)
+    return bool(labels) and all(re.fullmatch(r"\d+(\.\d+)?", str(s).strip()) for s in labels)
+
 
 def _is_bottom(p: dict) -> bool:
-    if p.get("subcategory") in ("Trousers", "Denim"):
-        return True
-    name = (p.get("name") or "").lower()
-    if p.get("subcategory") in (
-        "Kurta Sets", "Co-ords", "Shirts", "Tops & Shirts", "Dresses", "Knitwear",
-        "Outerwear", "Sarees", "Lehengas", "Anarkalis", "Dupattas",
-    ):
+    if _is_footwear(p) or _is_accessory(p):
         return False
-    return bool(__import__("re").search(r"\b(trousers?|jeans?|shorts)\b", name))
+    if p.get("subcategory") in BOTTOM_SUBCATEGORIES:
+        return True
+    if _has_numeric_size_chart(p):
+        return True
+    if p.get("subcategory") in APPAREL_SUBCATEGORIES:
+        return False
+    return bool(re.search(r"\b(trousers?|jeans?|shorts)\b", (p.get("name") or "").lower()))
 
 
 def _is_footwear(p: dict) -> bool:
@@ -57,6 +91,21 @@ def estimate_body(height: float, weight: float, shape: str) -> dict:
 
 def _to_in(cm: float) -> float:
     return round((cm / 2.54) * 10) / 10
+
+
+def _round_js(value: float) -> int:
+    """JavaScript Math.round semantics (half up) so the API text matches the UI."""
+    return math.floor(value + 0.5)
+
+
+def _estimate_foot_length(height, usual_size) -> float:
+    """Known UK size wins; otherwise derive from height so shoes are not fixed."""
+    digits = re.sub(r"[^\d.]", "", str(usual_size or ""))
+    if digits:
+        uk = float(digits)
+        if 3 <= uk <= 13:
+            return round((22.5 + (uk - 5) * 0.85) * 10) / 10
+    return round(float(height or 170) * 0.152 * 10) / 10
 
 
 def _zone_label(delta: float, band: dict) -> dict:
@@ -104,7 +153,8 @@ def garment_spec(product: dict, size: str) -> dict:
     ease = product.get("fit_ease") or "regular"
     ease_target = 2.5 if ease == "slim" else 12 if ease == "oversized" else 8 if ease == "relaxed" else 5.5
     ethnic = product.get("category") == "Ethnic Wear"
-    chest = body_chest + ease_target + (1.5 if ethnic else 0)
+    cut = SUBCATEGORY_FIT.get(product.get("subcategory"), 0)
+    chest = body_chest + ease_target + (1.5 if ethnic else 0) + cut
     return {
         "type": "apparel",
         "chest_in": round(chest * 10) / 10,
@@ -191,12 +241,12 @@ def recommend(product: dict, body: dict, preference: str = "regular") -> dict | 
         explanation = f"{best['size']} matches your foot length most closely. If between sizes, take the larger."
     elif _is_bottom(product):
         explanation = (
-            f"{best['size']} sits closest to your estimated {int(_to_in(body.get('waist', 82)))} in waist. "
+            f"{best['size']} sits closest to your estimated {_round_js(_to_in(body.get('waist', 82)))} in waist. "
             + ("It may feel snug at first." if tight else "Expect a roomier line through the hip." if loose else "Expect the intended straight line.")
         )
     else:
         explanation = (
-            f"{best['size']} gives about {int(best['ease']['chest_in'] - _to_in(body.get('chest', 96)))} in of chest ease "
+            f"{best['size']} gives about {_round_js(best['ease']['chest_in'] - _to_in(body.get('chest', 96)))} in of chest ease "
             f"— the garment is designed for a {band['label'] if band else 'regular'} fit."
             + (" The shoulder may feel close." if tight else " It will sit generously through the body." if loose else "")
         )
@@ -226,10 +276,12 @@ def fit_profile_for(product: dict, profile: dict) -> dict | None:
             "source": "measured",
         }
     else:
-        body = estimate_body(float(profile.get("height") or 170), float(profile.get("weight") or 68), profile.get("shape") or "Balanced")
-        import re
+        height = float(profile.get("height") or 170)
         usual = profile.get("usual_size") or "M"
-        usual_digits = re.sub(r"[^\d.]", "", usual)
-        body["foot_length_cm"] = 22.5 + (float(usual_digits) if usual_digits else 4) * 0.85
+        body = estimate_body(height, float(profile.get("weight") or 68), profile.get("shape") or "Balanced")
+        body["foot_length_cm"] = _estimate_foot_length(height, usual)
         body["source"] = "estimate"
-    return recommend(product, body, profile.get("fitPreference") or "regular")
+    # The API schema is snake_case (fit_preference); the direct service callers
+    # use camelCase. Accept both so the preference actually reaches scoring.
+    preference = profile.get("fitPreference") or profile.get("fit_preference") or "regular"
+    return recommend(product, body, preference)

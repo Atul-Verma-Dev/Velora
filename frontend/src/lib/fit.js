@@ -9,6 +9,35 @@
 
 export const SIZE_ORDER = ["XS", "S", "M", "L", "XL", "XXL"];
 
+// Size labels arrive from the database alphabetically ("L", "M", "S", "XL",
+// "XS", "UK 10", "UK 11", "UK 5"). Display, size charts and tie-breaking all
+// need the real order: letters by the size ladder, everything else numerically.
+export function orderSizes(sizes = []) {
+  const ladder = new Map(SIZE_ORDER.map((s, i) => [s, i]));
+  return [...sizes].sort((a, b) => {
+    const la = ladder.get(String(a).toUpperCase());
+    const lb = ladder.get(String(b).toUpperCase());
+    if (la != null && lb != null) return la - lb;
+    if (la != null) return -1;
+    if (lb != null) return 1;
+    const na = parseFloat(String(a).replace(/[^\d.]/g, ""));
+    const nb = parseFloat(String(b).replace(/[^\d.]/g, ""));
+    if (Number.isFinite(na) && Number.isFinite(nb) && na !== nb) return na - nb;
+    return String(a).localeCompare(String(b));
+  });
+}
+
+// Foot length estimate used for footwear. A known UK size wins; otherwise the
+// shopper's height is used, so two different shoppers never get the same shoe.
+export function estimateFootLength({ height, usualSize } = {}) {
+  const digits = String(usualSize ?? "").replace(/[^\d.]/g, "");
+  if (digits) {
+    const uk = parseFloat(digits);
+    if (uk >= 3 && uk <= 13) return Math.round((22.5 + (uk - 5) * 0.85) * 10) / 10;
+  }
+  return Math.round((Number(height) || 170) * 0.152 * 10) / 10;
+}
+
 const APPAREL_CHEST_IN = { XS: 33, S: 35, M: 37.5, L: 40, XL: 43, XXL: 46 };
 const EASE_BANDS = {
   slim: { min: 1.5, max: 4.5, label: "close" },
@@ -18,13 +47,47 @@ const EASE_BANDS = {
 };
 const STRETCH_BONUS = { low: 0, medium: 1.5, high: 3 };
 
-const isBottom = (p) =>
-  ["Trousers", "Denim"].includes(p.subcategory) ||
-  (!["Kurta Sets", "Co-ords", "Shirts", "Tops & Shirts", "Dresses", "Knitwear", "Outerwear", "Sarees", "Lehengas", "Anarkalis", "Dupattas"].includes(p.subcategory) &&
-    /\b(trousers?|jeans?|shorts)\b/i.test(p.name));
+// Per-subcategory cut differences. The catalogue shares one body chart, so
+// without this a shirt, a kurta and an oversized top of the same label have
+// identical finished measurements and a mid-size body gets one letter
+// everywhere. Positive = cut fuller than the base chart (outerwear is worn
+// over layers, kurtas and co-ords are cut easy), negative = closer cut.
+const SUBCATEGORY_FIT = {
+  Outerwear: 1.5,
+  "Kurta Sets": 0.5,
+  "Co-ords": 0.5,
+  Dresses: -0.5,
+  Shirts: -1,
+  "Tops & Shirts": -1.5,
+};
+
+const APPAREL_SUBCATEGORIES = [
+  "Kurta Sets", "Co-ords", "Shirts", "Tops & Shirts", "Dresses", "Knitwear",
+  "Outerwear", "Sarees", "Lehengas", "Anarkalis", "Dupattas",
+];
+const BOTTOM_SUBCATEGORIES = ["Trousers", "Denim", "Trousers & Denim"];
+
 const isFootwear = (p) => p.category === "Footwear";
 const isAccessory = (p) =>
   ["Accessories"].includes(p.category) && !isFootwear(p);
+
+// Catalogue rows label waist-sized bottoms with the waist in inches ("26").
+// Those must use the bottom chart; applying the letter body chart to them made
+// every size resolve to the same finished garment and every shopper get "26".
+const hasNumericSizeChart = (p) =>
+  Array.isArray(p.sizes) &&
+  p.sizes.length > 0 &&
+  p.sizes.every((s) => /^\d+(\.\d+)?$/.test(String(s).trim()));
+
+const isBottom = (p) => {
+  if (isFootwear(p) || isAccessory(p)) return false;
+  if (BOTTOM_SUBCATEGORIES.includes(p.subcategory)) return true;
+  if (hasNumericSizeChart(p)) return true;
+  return (
+    !APPAREL_SUBCATEGORIES.includes(p.subcategory) &&
+    /\b(trousers?|jeans?|shorts)\b/i.test(p.name)
+  );
+};
 
 export function garmentSpec(product, size) {
   if (isAccessory(product)) {
@@ -62,7 +125,8 @@ export function garmentSpec(product, size) {
   const bodyChest = APPAREL_CHEST_IN[size] ?? 37.5;
   const easeTarget = product.fitEase === "slim" ? 2.5 : product.fitEase === "oversized" ? 12 : product.fitEase === "relaxed" ? 8 : 5.5;
   const ethnic = product.category === "Ethnic Wear";
-  const chest = bodyChest + easeTarget + (ethnic ? 1.5 : 0);
+  const cut = SUBCATEGORY_FIT[product.subcategory] || 0;
+  const chest = bodyChest + easeTarget + (ethnic ? 1.5 : 0) + cut;
   return {
     type: "apparel",
     chestIn: Math.round(chest * 10) / 10,
@@ -84,7 +148,7 @@ export function sizeChart(product) {
   if (isFootwear(product)) {
     return {
       headers: ["Size", "Foot length", "Insole"],
-      rows: product.sizes.map((s) => {
+      rows: orderSizes(product.sizes).map((s) => {
         const spec = garmentSpec(product, s);
         return [s, `${spec.footLengthCm} cm`, `${spec.footLengthCm + 0.4} cm`];
       }),
@@ -94,7 +158,7 @@ export function sizeChart(product) {
   if (isBottom(product)) {
     return {
       headers: ["Size", "Waist", "Hip", "Inseam"],
-      rows: product.sizes.map((s) => {
+      rows: orderSizes(product.sizes).map((s) => {
         const g = garmentSpec(product, s);
         return [s, `${g.waistIn} in`, `${g.hipIn} in`, `${g.inseamIn} in`];
       }),
@@ -103,7 +167,7 @@ export function sizeChart(product) {
   }
   return {
     headers: ["Size", "Chest", "Waist", "Hip", "Length"],
-    rows: product.sizes.map((s) => {
+    rows: orderSizes(product.sizes).map((s) => {
       const g = garmentSpec(product, s);
       return [s, `${g.chestIn} in`, `${g.waistIn} in`, `${g.hipIn} in`, `${g.lengthIn} in`];
     }),
@@ -148,7 +212,7 @@ export function recommend(product, body, preference) {
     };
   }
 
-  const ranked = product.sizes.map((size, idx) => {
+  const ranked = orderSizes(product.sizes).map((size, idx) => {
     const g = garmentSpec(product, size);
     if (g.type === "footwear") {
       const footLen = Number(body.footLengthCm) || 26;
@@ -235,7 +299,7 @@ export function fitProfileFor(product, profile) {
         }
       : {
           ...estimateBody(profile),
-          footLengthCm: (22.5 + ((parseFloat(String(profile.usualSize).replace(/[^\d.]/g, "")) || 8) - 5) * 0.85),
+          footLengthCm: estimateFootLength(profile),
           source: "estimate",
         };
   return recommend(product, body, profile.fitPreference);

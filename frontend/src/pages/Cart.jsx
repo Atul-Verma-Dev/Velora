@@ -120,7 +120,9 @@ export default function Cart() {
       }
       // Add through the store so stock, floor and one-per-order rules are enforced
       // in one place (its offer price is the same tier price the backend quoted).
-      if (!addToCart(c.product, c.size, 1, { offer: true })) return;
+      // The recommendation id must live on the cart line so checkout can send
+      // offer_references and the order can redeem the acceptance.
+      if (!addToCart(c.product, c.size, 1, { offer: true, recommendationId: c.recommendationId })) return;
       setDismissed((d) => [...d, c.product.id]);
       return;
     }
