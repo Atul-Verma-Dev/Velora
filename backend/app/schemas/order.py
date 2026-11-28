@@ -9,6 +9,18 @@ class OrderItemIn(BaseModel):
     qty: int = Field(..., ge=1)
 
 
+class OfferReferenceIn(BaseModel):
+    """A Complete the Look offer reference accepted by the shopper.
+
+    The server validates that the recommendation exists, is accepted,
+    and that the offered price matches the persisted recommendation price.
+    """
+    recommendation_id: int = Field(..., ge=1)
+    sku: str = Field(..., min_length=1)
+    size: str = Field(..., min_length=1, max_length=32)
+    offer_price: float = Field(..., ge=0)
+
+
 class OrderIn(BaseModel):
     user_id: str = Field(default="user-demo", min_length=1)
     customer_name: str = Field(..., min_length=1)
@@ -17,10 +29,14 @@ class OrderIn(BaseModel):
     payment: str = Field(..., min_length=1)
     delivery: str = Field(..., min_length=1)
     items: list[OrderItemIn] = Field(..., min_length=1)
-    subtotal: float = Field(..., ge=0)
-    discount: float = Field(default=0, ge=0)
-    shipping: float = Field(default=0, ge=0)
-    total: float = Field(..., ge=0)
+    offer_references: list[OfferReferenceIn] = Field(default_factory=list)
+    # Client-supplied pricing fields are diagnostic only. The server always
+    # recalculates subtotal, shipping and total from database values and
+    # never trusts a client-supplied total.
+    client_subtotal: float | None = Field(default=None, ge=0)
+    client_discount: float | None = Field(default=None, ge=0)
+    client_shipping: float | None = Field(default=None, ge=0)
+    client_total: float | None = Field(default=None, ge=0)
 
 
 class OrderItemOut(BaseModel):

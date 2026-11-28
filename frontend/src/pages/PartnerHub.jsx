@@ -353,6 +353,7 @@ export default function PartnerHub() {
   const nav = useNavigate();
   const [backendSellerMetrics, setBackendSellerMetrics] = useState(null);
   const [backendLiquidation, setBackendLiquidation] = useState(null);
+  const [backendSellerError, setBackendSellerError] = useState(null);
 
   // Map a backend liquidation/aging row to the frontend product shape
   // used by the PartnerHub tables and stat cards.
@@ -422,11 +423,16 @@ export default function PartnerHub() {
   useEffect(() => {
     if (!sellerBackendEnabled()) return;
     let cancelled = false;
+    setBackendSellerError(null);
     Promise.all([
       sellerMetrics(SELLER_ID).then((d) => { if (!cancelled) setBackendSellerMetrics(d); }),
       sellerLiquidation(SELLER_ID, 60).then((d) => { if (!cancelled) setBackendLiquidation(d); }),
-    ]).catch(() => {
-      // Backend unavailable — local stats remain the source of truth.
+    ]).catch((err) => {
+      if (cancelled) return;
+      // Do not present stale local metrics as current backend data.
+      setBackendSellerMetrics(null);
+      setBackendLiquidation(null);
+      setBackendSellerError(err.message || "Backend seller data unavailable");
     });
     return () => { cancelled = true; };
   }, [SELLER_ID]);
@@ -553,6 +559,11 @@ export default function PartnerHub() {
               </div>
 
               <div className="stat-grid partner-stats">
+                {sellerBackendEnabled() && backendSellerError && (
+                  <InfoNote tone="danger" title="Backend data unavailable">
+                    {backendSellerError} Local figures are shown instead; they are not from the server.
+                  </InfoNote>
+                )}
                 <Stat label="Gross sales (demo)" value={money(grossSales)} note="All non-cancelled orders" icon={<TrendingUp size={15} />} />
                 <Stat label="Orders" value={myOrders.length} note={`${newOrders.length} awaiting action`} icon={<Package size={15} />} />
                 <Stat label="Live listings" value={live.length} note={`${mine.filter((p) => p.status === "under_review").length} in review`} icon={<Tag size={15} />} />

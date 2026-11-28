@@ -132,7 +132,8 @@ def recommend(product: dict, body: dict, preference: str = "regular") -> dict | 
         }
 
     ranked = []
-    for size in product.get("sizes", SIZE_ORDER):
+    for size_entry in product.get("sizes", SIZE_ORDER):
+        size = size_entry["size"] if isinstance(size_entry, dict) else size_entry
         g = garment_spec(product, size)
         if g.get("type") == "footwear":
             foot_len = float(body.get("foot_length_cm") or 26)

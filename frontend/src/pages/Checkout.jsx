@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import { useApp } from "../store/AppStore.jsx";
 import { couponValue, linePrice, money, shippingFor, FREE_SHIPPING_THRESHOLD } from "../lib/format.js";
+import { isBackendEnabled } from "../lib/api/client.js";
 import { Badge, Breadcrumbs, Btn, EmptyState, Field, InfoNote, PageHead } from "../components/ui.jsx";
 
 const STEPS = [
@@ -25,6 +26,7 @@ export default function Checkout() {
     cart, products, addresses, saveAddress, placeOrder, coupon, setCoupon, config, notify,
   } = useApp();
   const nav = useNavigate();
+  const backendMode = isBackendEnabled();
   const [step, setStep] = useState(1);
   const [addressId, setAddressId] = useState(addresses.find((a) => a.isDefault)?.id || addresses[0]?.id || "");
   const [newAddress, setNewAddress] = useState({
@@ -278,9 +280,17 @@ export default function Checkout() {
                   </div>
                 </div>
               )}
-              <InfoNote tone="warning" title="Demo checkout">
-                Placing this order does not take a payment, reserve stock on a server or create a real shipment. It records a demo order in your browser.
-              </InfoNote>
+              {backendMode ? (
+                <InfoNote tone="warning" title="Backend checkout">
+                  Placing this order records it in PostgreSQL and decrements
+                  inventory. Payment and shipment are not actually processed
+                  in this demo.
+                </InfoNote>
+              ) : (
+                <InfoNote tone="warning" title="Demo checkout">
+                  Placing this order does not take a payment, reserve stock on a server or create a real shipment. It records a demo order in your browser.
+                </InfoNote>
+              )}
               <div className="checkout-nav">
                 <button type="button" className="btn btn-ghost" onClick={() => setStep(2)}><ArrowLeft size={15} /> Delivery</button>
                 <Btn variant="dark" onClick={next} iconRight={<ArrowRight size={15} />}>Review order</Btn>
@@ -341,7 +351,23 @@ export default function Checkout() {
                   {placing ? "Placing demo order…" : `Place demo order · ${money(total)}`}
                 </Btn>
               </div>
-              <p className="checkout-terms">By placing this demo order you agree to Velora's <Link to="/policies/terms">terms</Link> and <Link to="/policies/returns">returns policy</Link>. This is a prototype; no contract of sale is formed.</p>
+              <p className="checkout-terms">
+                {backendMode ? (
+                  <>
+                    By placing this order you agree to Velora’s{" "}
+                    <Link to="/policies/terms">terms</Link>{" "}
+                    and{" "}
+                    <Link to="/policies/returns">returns policy</Link>. The order is recorded in PostgreSQL and inventory is decremented, but no payment is collected and no shipment is created.
+                  </>
+                ) : (
+                  <>
+                    By placing this demo order you agree to Velora’s{" "}
+                    <Link to="/policies/terms">terms</Link>{" "}
+                    and{" "}
+                    <Link to="/policies/returns">returns policy</Link>. This is a prototype; no contract of sale is formed.
+                  </>
+                )}
+              </p>
             </section>
           )}
         </div>

@@ -125,7 +125,7 @@ export default function Cart() {
           return;
         }
       }
-      setCart((old) => [...old, { productId: c.product.id, size: c.size, qty: 1, price: c.price, offer: true }]);
+      setCart((old) => [...old, { productId: c.product.id, size: c.size, qty: 1, price: c.price, offer: true, recommendationId: c.recommendationId }]);
       notify(`Added at your offer price · ${c.product.name}`);
       setDismissed((d) => [...d, c.product.id]);
       return;

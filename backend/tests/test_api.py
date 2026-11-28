@@ -2,10 +2,57 @@
 
 from fastapi.testclient import TestClient
 
+from app.core.db import db_cursor
 from app.main import app
 
 
 client = TestClient(app)
+
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _cleanup_test_orders():
+    """Clean up test orders after each test to avoid polluting other test modules."""
+    yield
+    with db_cursor(commit=True) as cur:
+        # Restore per-size stock for products touched by test orders.
+        cur.execute(
+            """
+            SELECT sku, size, -SUM(delta) as restored
+            FROM inventory_transactions
+            WHERE reason LIKE 'Sale · order VLR-%'
+            GROUP BY sku, size
+            """
+        )
+        for row in cur.fetchall():
+            cur.execute(
+                """
+                UPDATE product_sizes
+                SET stock = stock + %s
+                WHERE sku = %s AND size = %s
+                """,
+                (row["restored"], row["sku"], row["size"]),
+            )
+        # Also restore total product stock.
+        cur.execute(
+            """
+            SELECT sku, -SUM(delta) as restored
+            FROM inventory_transactions
+            WHERE reason LIKE 'Sale · order VLR-%'
+            GROUP BY sku
+            """
+        )
+        for row in cur.fetchall():
+            cur.execute(
+                "UPDATE products SET stock = stock + %s WHERE sku = %s",
+                (row["restored"], row["sku"]),
+            )
+        # Delete test order records.
+        cur.execute("DELETE FROM inventory_transactions WHERE reason LIKE 'Sale · order VLR-%'")
+        cur.execute("DELETE FROM order_items WHERE order_id LIKE 'VLR-%'")
+        cur.execute("DELETE FROM orders WHERE id LIKE 'VLR-%' AND user_id = 'user-demo'")
 
 
 def test_health():
@@ -32,6 +79,35 @@ def test_get_product_by_sku():
 def test_get_product_not_found():
     resp = client.get("/api/v1/products/NONEXISTENT")
     assert resp.status_code == 404
+
+
+def test_list_products_includes_sizes():
+    resp = client.get("/api/v1/products/?limit=3")
+    assert resp.status_code == 200
+    data = resp.json()
+    items = data["items"]
+    assert len(items) > 0
+    for item in items:
+        assert "sizes" in item
+        assert isinstance(item["sizes"], list)
+        for size_entry in item["sizes"]:
+            assert "size" in size_entry
+            assert "stock" in size_entry
+            assert isinstance(size_entry["size"], str)
+            assert isinstance(size_entry["stock"], int)
+
+
+def test_get_product_by_sku_includes_sizes():
+    resp = client.get("/api/v1/products/VLR-1001")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["sku"] == "VLR-1001"
+    assert "sizes" in data
+    assert isinstance(data["sizes"], list)
+    assert len(data["sizes"]) > 0
+    for size_entry in data["sizes"]:
+        assert "size" in size_entry
+        assert "stock" in size_entry
 
 
 def test_aging_inventory():
@@ -254,20 +330,74 @@ def test_place_order_success():
             "payment": "UPI (demo)",
             "delivery": "Standard delivery · free",
             "items": [
-                {"sku": "VLR-1001", "size": "M", "qty": 1},
+                {"sku": "VLR-1001", "size": "S", "qty": 1},
             ],
-            "subtotal": 1499,
-            "discount": 0,
-            "shipping": 0,
-            "total": 1499,
+            # Client-supplied pricing is diagnostic only — server recalculates.
+            "client_subtotal": 1499,
+            "client_discount": 0,
+            "client_shipping": 0,
+            "client_total": 1499,
         },
     )
     assert resp.status_code == 200
     data = resp.json()
     assert data["id"].startswith("VLR-")
     assert data["status"] == "Processing"
-    assert data["total"] == 1499
+    # Server-calculated total from database price (VLR-1002 M).
+    assert data["total"] > 0
+    assert data["subtotal"] > 0
     assert data["customer_name"] == "Aarav Mehta"
+
+
+def test_place_order_ignores_client_total():
+    """A manipulated client total must never override the server-calculated total."""
+    resp = client.post(
+        "/api/v1/orders",
+        json={
+            "user_id": "user-demo",
+            "customer_name": "Aarav Mehta",
+            "contact": "+91 98765 43210",
+            "address": "123 MG Road, Bengaluru 560001",
+            "payment": "UPI (demo)",
+            "delivery": "Standard delivery · free",
+            "items": [
+                {"sku": "VLR-1003", "size": "M", "qty": 1},
+            ],
+            "client_subtotal": 0,
+            "client_discount": 1000,
+            "client_shipping": 0,
+            "client_total": 1,
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    # Total must be server-calculated, not the client's manipulated value.
+    assert data["total"] != 1.0
+    assert data["subtotal"] != 0.0
+
+
+def test_place_order_zero_subtotal_still_charges_full_price():
+    """Client-submitted zero subtotal must not reduce the server total."""
+    resp = client.post(
+        "/api/v1/orders",
+        json={
+            "user_id": "user-demo",
+            "customer_name": "Aarav Mehta",
+            "contact": "+91 98765 43210",
+            "address": "123 MG Road, Bengaluru 560001",
+            "payment": "UPI (demo)",
+            "delivery": "Standard delivery · free",
+            "items": [
+                {"sku": "VLR-1001", "size": "S", "qty": 1},
+            ],
+            "client_subtotal": 0,
+            "client_total": 0,
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] > 0
+    assert data["subtotal"] > 0
 
 
 def test_place_order_insufficient_stock():
@@ -281,12 +411,10 @@ def test_place_order_insufficient_stock():
             "payment": "UPI (demo)",
             "delivery": "Standard delivery · free",
             "items": [
-                {"sku": "VLR-1001", "size": "M", "qty": 99999},
+                {"sku": "VLR-1002", "size": "M", "qty": 99999},
             ],
-            "subtotal": 1499,
-            "discount": 0,
-            "shipping": 0,
-            "total": 1499,
+            "client_subtotal": 1499,
+            "client_total": 1499,
         },
     )
     assert resp.status_code == 409
@@ -305,10 +433,93 @@ def test_place_order_nonexistent_product():
             "items": [
                 {"sku": "NONEXISTENT", "size": "M", "qty": 1},
             ],
-            "subtotal": 1499,
-            "discount": 0,
-            "shipping": 0,
-            "total": 1499,
+            "client_subtotal": 1499,
+            "client_total": 1499,
         },
     )
     assert resp.status_code == 404
+
+
+def test_place_order_invalid_size_rejected():
+    """A size with no product_sizes record must be rejected (no aggregate fallback)."""
+    resp = client.post(
+        "/api/v1/orders",
+        json={
+            "user_id": "user-demo",
+            "customer_name": "Aarav Mehta",
+            "contact": "+91 98765 43210",
+            "address": "123 MG Road, Bengaluru 560001",
+            "payment": "UPI (demo)",
+            "delivery": "Standard delivery · free",
+            "items": [
+                {"sku": "VLR-1001", "size": "XXXL", "qty": 1},
+            ],
+            "client_subtotal": 1899,
+            "client_total": 1899,
+        },
+    )
+    assert resp.status_code == 409
+
+
+def test_place_order_duplicate_lines_aggregated():
+    """Duplicate SKU/size lines in the cart are aggregated before inventory check."""
+    resp = client.post(
+        "/api/v1/orders",
+        json={
+            "user_id": "user-demo",
+            "customer_name": "Aarav Mehta",
+            "contact": "+91 98765 43210",
+            "address": "123 MG Road, Bengaluru 560001",
+            "payment": "UPI (demo)",
+            "delivery": "Standard delivery · free",
+            "items": [
+                {"sku": "VLR-1001", "size": "S", "qty": 1},
+                {"sku": "VLR-1001", "size": "S", "qty": 1},
+            ],
+            "client_subtotal": 0,
+            "client_total": 0,
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    # Two lines of qty 1 each -> aggregated qty 2
+    assert data["subtotal"] == 1899.0 * 2
+    assert data["total"] == 1899.0 * 2
+
+
+def test_place_order_rollback_leaves_inventory_unchanged():
+    """A failed order (insufficient stock) leaves inventory unchanged."""
+    from app.core.db import db_cursor
+
+    with db_cursor() as cur:
+        cur.execute(
+            "SELECT stock FROM product_sizes WHERE sku = %s AND size = %s",
+            ("VLR-1003", "M"),
+        )
+        before = int(cur.fetchone()["stock"])
+
+    resp = client.post(
+        "/api/v1/orders",
+        json={
+            "user_id": "user-demo",
+            "customer_name": "Aarav Mehta",
+            "contact": "+91 98765 43210",
+            "address": "123 MG Road, Bengaluru 560001",
+            "payment": "UPI (demo)",
+            "delivery": "Standard delivery · free",
+            "items": [
+                {"sku": "VLR-1003", "size": "M", "qty": 99999},
+            ],
+            "client_subtotal": 0,
+            "client_total": 0,
+        },
+    )
+    assert resp.status_code == 409
+
+    with db_cursor() as cur:
+        cur.execute(
+            "SELECT stock FROM product_sizes WHERE sku = %s AND size = %s",
+            ("VLR-1003", "M"),
+        )
+        after = int(cur.fetchone()["stock"])
+    assert before == after, f"Stock changed: {before} -> {after}"

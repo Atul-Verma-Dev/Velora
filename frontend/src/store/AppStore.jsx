@@ -50,8 +50,11 @@ const AppCtx = createContext(null);
 export const useApp = () => useContext(AppCtx);
 
 export function AppProvider({ children }) {
-  const [products, setProducts] = useState(() => load("products", seedProducts));
+  const [products, setProducts] = useState(() =>
+    productsBackendEnabled() ? [] : load("products", seedProducts)
+  );
   const [productsLoading, setProductsLoading] = useState(false);
+  const [productsError, setProductsError] = useState(null);
   const [cart, setCart] = useState(() => load("cart", []));
   const [wishlist, setWishlist] = useState(() => load("wishlist", []));
   const [orders, setOrders] = useState(() => load("orders", [...seedOrders, ...sellerSeedOrders]));
@@ -112,18 +115,21 @@ export function AppProvider({ children }) {
   useEffect(() => () => clearTimeout(toastTimer.current), []);
 
   // Backend product catalogue — loads live listings from the API when the
-  // flag is enabled. Falls back to local seed data otherwise.
+  // flag is enabled. On failure, shows a visible error instead of silently
+  // substituting seed data. Local fallback only applies when the flag is off.
   useEffect(() => {
     if (!productsBackendEnabled()) return;
     let cancelled = false;
     setProductsLoading(true);
+    setProductsError(null);
     getProducts({ status: "live", limit: 200 }).then((data) => {
       if (cancelled) return;
       const items = (data && data.items) || [];
       setProducts(items.map(toFrontendProduct));
       setProductsLoading(false);
-    }).catch(() => {
-      // Backend unavailable — local seed data remains the source of truth.
+    }).catch((err) => {
+      if (cancelled) return;
+      setProductsError(err.message || "Backend catalogue unavailable");
       setProductsLoading(false);
     });
     return () => { cancelled = true; };
@@ -248,27 +254,31 @@ export function AppProvider({ children }) {
     if (!cart.length) return null;
 
     if (productsBackendEnabled()) {
-      // Backend path: place the order server-side, then reconcile local state.
-      const invalid = cart.find((line) => {
-        const p = products.find((x) => x.id === line.productId);
-        return !p || p.status !== "live" || Math.min(p.stock, stockForSize(p, line.size)) < line.qty;
-      });
-      if (invalid) {
-        notify("Stock changed while you were checking out. Please review your bag.", "error");
-        return null;
-      }
+      // Backend path: place the order server-side. Pricing is server-authoritative
+      // — the frontend sends only items, delivery and address; the server
+      // calculates subtotal, shipping, discount and total from database values.
       const staleOffer = cart.find((line) => line.offer && !offerStillValid(products.find((x) => x.id === line.productId), line, config));
       if (staleOffer) {
         notify("A Complete the Look offer in your bag has expired. Remove it and try again.", "error");
         return null;
       }
-      const subtotal = cart.reduce((s, l) => s + linePrice(l, products.find((x) => x.id === l.productId)) * l.qty, 0);
-      const discount = couponValue(couponArg || coupon, subtotal);
-      const ship = delivery?.price ?? shippingFor(subtotal);
       const backendItems = cart.map((l) => {
         const p = products.find((x) => x.id === l.productId);
         return { sku: p.id, size: l.size, qty: l.qty };
       });
+      // Build offer references for Complete the Look line items.
+      const offerRefs = cart
+        .filter((l) => l.offer)
+        .map((l) => {
+          const p = products.find((x) => x.id === l.productId);
+          return {
+            recommendation_id: l.recommendationId || 0,
+            sku: p.id,
+            size: l.size,
+            offer_price: l.price,
+          };
+        })
+        .filter((r) => r.recommendation_id > 0);
       try {
         const placed = await placeOrderApi({
           user_id: user.id,
@@ -278,10 +288,7 @@ export function AppProvider({ children }) {
           payment: payment || "Cash on delivery (demo)",
           delivery: delivery?.label || "Standard delivery · free",
           items: backendItems,
-          subtotal,
-          discount,
-          shipping: ship,
-          total: subtotal - discount + ship,
+          offer_references: offerRefs,
         });
         if (!placed) return null;
         const orderId = placed.id;
@@ -309,6 +316,7 @@ export function AppProvider({ children }) {
                 id: p.id, name: p.name, brand: p.brand, price: linePrice(l, p), qty: l.qty, offer: Boolean(l.offer),
                 size: l.size, colour: p.color, image: p.image,
                 sellerId: p.sellerId, sellerName: p.sellerName,
+                ...(l.recommendationId ? { recommendationId: l.recommendationId } : {}),
               };
             }),
             tracking: [
@@ -322,7 +330,7 @@ export function AppProvider({ children }) {
           ...old,
         ]);
         log("Order placed", orderId, `${cart.length} line(s) · ${placed.payment}`, "Shopper");
-        notify("Order placed — demo checkout, no payment was taken.");
+        notify("Order placed — recorded in PostgreSQL. Inventory decremented. Payment and shipment are not processed in this demo.");
         return { id: orderId };
       } catch (err) {
         notify(`Order failed: ${err.message}`, "error");
@@ -620,7 +628,7 @@ export function AppProvider({ children }) {
   }, [notify]);
 
   const value = useMemo(() => ({
-    products, productsLoading, setProducts, cart, wishlist, orders, reviews, role, adminRole, setAdminRole,
+    products, productsLoading, productsError, setProducts, cart, wishlist, orders, reviews, role, adminRole, setAdminRole,
     user, fitProfile, addresses, sellers, applications, config, audit, searchLog, ledger,
     recentlyViewed, recentSearches, toast, notify, log,
     addToCart, updateQty, removeLine, toggleWish, moveToWishlist, clearCart, markViewed,
@@ -635,7 +643,7 @@ export function AppProvider({ children }) {
       window.location.href = "/";
     },
   }), [
-    products, productsLoading, cart, wishlist, orders, reviews, role, adminRole, user, fitProfile, addresses,
+    products, productsLoading, productsError, cart, wishlist, orders, reviews, role, adminRole, user, fitProfile, addresses,
     sellers, applications, config, audit, searchLog, ledger, recentlyViewed, recentSearches,
     toast, notify, log, addToCart, updateQty, removeLine, toggleWish, moveToWishlist, clearCart,
     markViewed, placeOrder, updateOrderStatus, requestReturn, addReview, moderateReview,

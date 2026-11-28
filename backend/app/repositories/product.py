@@ -18,7 +18,11 @@ def get_product_by_sku(sku: str):
             """,
             (sku,),
         )
-        return cur.fetchone()
+        row = cur.fetchone()
+        if not row:
+            return None
+        row["sizes"] = get_product_size_list(sku)
+        return row
 
 
 def get_products_by_skus(skus: list[str]):
@@ -38,7 +42,11 @@ def get_products_by_skus(skus: list[str]):
             """,
             (skus,),
         )
-        return cur.fetchall()
+        rows = cur.fetchall()
+    sizes_by_sku = get_product_sizes(skus)
+    for row in rows:
+        row["sizes"] = sizes_by_sku.get(row["sku"], [])
+    return rows
 
 
 def list_products(
@@ -82,7 +90,17 @@ def list_products(
             """,
             (*params, limit, offset),
         )
-        return cur.fetchall()
+        rows = cur.fetchall()
+    skus = [row["sku"] for row in rows]
+    sizes_by_sku = get_product_sizes(skus)
+    for row in rows:
+        row["sizes"] = sizes_by_sku.get(row["sku"], [])
+    return rows
+
+
+def get_product_size_list(sku: str) -> list[dict]:
+    """Return [{size, stock}, ...] for a single product."""
+    return get_product_sizes([sku]).get(sku, [])
 
 
 def stock_for_size(sku: str, size: str) -> int | None:
