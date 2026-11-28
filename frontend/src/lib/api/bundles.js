@@ -42,6 +42,15 @@ function toOffer(rec) {
   };
 }
 
+let cartSessionId = null;
+
+export function getCartSessionId() {
+  if (!cartSessionId) {
+    cartSessionId = crypto.randomUUID();
+  }
+  return cartSessionId;
+}
+
 export async function fetchBundleRecommendations(cartItems, cartSubtotal, limit = 3) {
   if (!isBackendEnabled()) return null;
 
@@ -52,6 +61,7 @@ export async function fetchBundleRecommendations(cartItems, cartSubtotal, limit 
       qty: c.qty,
     })),
     cart_subtotal: cartSubtotal,
+    cart_session_id: getCartSessionId(),
     limit,
   };
 
@@ -59,9 +69,13 @@ export async function fetchBundleRecommendations(cartItems, cartSubtotal, limit 
   return (data.recommendations || []).map(toOffer);
 }
 
-export async function acceptBundle(recommendationId) {
+export async function acceptBundle(recommendationId, orderId = null) {
   if (!isBackendEnabled()) return null;
-  return api.post("/api/v1/bundles/accept", { recommendation_id: recommendationId });
+  const body = { recommendation_id: recommendationId };
+  if (orderId) {
+    body.order_id = orderId;
+  }
+  return api.post("/api/v1/bundles/accept", body);
 }
 
 export async function rejectBundle(recommendationId) {

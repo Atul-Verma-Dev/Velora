@@ -156,3 +156,68 @@ def test_search_metrics():
     assert resp.status_code == 200
     data = resp.json()
     assert "total" in data
+
+
+def test_inflated_client_subtotal_cannot_unlock_deep_tier():
+    """Client-submitted inflated cart_subtotal must not unlock the 60% deep tier.
+
+    The deep-tier gate is enforced using the server-calculated subtotal only.
+    VLR-1001 price = 1899, qty=1 -> server subtotal = 1899 < 2000 gate.
+    Client claims 5000 but gate must still be false.
+    """
+    resp = client.post(
+        "/api/v1/bundles/recommend",
+        json={
+            "cart_items": [
+                {"sku": "VLR-1001", "size": "M", "qty": 1}
+            ],
+            "cart_subtotal": 5000,
+            "limit": 3,
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    # Server-calculated subtotal
+    assert data["cart_subtotal"] == 1899.0
+    # Client value preserved as diagnostic only
+    assert data["client_subtotal"] == 5000.0
+    # Gate must NOT be met despite inflated client value
+    assert data["gate_met"] is False
+
+
+def test_recommendation_session_uniqueness():
+    """Two requests with different cart contents must get different cart_id sessions.
+
+    The cart_id is a UUID, not a join of SKUs, so different sessions never collide.
+    We verify this indirectly: each recommend call generates its own session,
+    and the recommendation IDs are unique per call.
+    """
+    resp1 = client.post(
+        "/api/v1/bundles/recommend",
+        json={
+            "cart_items": [
+                {"sku": "VLR-1001", "size": "M", "qty": 1}
+            ],
+            "cart_subtotal": 1500,
+            "limit": 3,
+        },
+    )
+    assert resp1.status_code == 200
+    ids_1 = {r["recommendation_id"] for r in resp1.json()["recommendations"]}
+
+    resp2 = client.post(
+        "/api/v1/bundles/recommend",
+        json={
+            "cart_items": [
+                {"sku": "VLR-1002", "size": "L", "qty": 2}
+            ],
+            "cart_subtotal": 1500,
+            "limit": 3,
+        },
+    )
+    assert resp2.status_code == 200
+    ids_2 = {r["recommendation_id"] for r in resp2.json()["recommendations"]}
+
+    # Different sessions produce different recommendation IDs
+    assert ids_1 != ids_2
+    assert not (ids_1 & ids_2), "Recommendation IDs must not collide across sessions"

@@ -3,14 +3,17 @@
 Resumable: all upserts are idempotent (ON CONFLICT DO UPDATE). Safe to re-run.
 
 Per-size stock derivation:
-  The frontend catalogue (src/data/catalog.js:2508-2518) derives per-size stock
-  deterministically from total stock using a fixed size distribution:
+  The frontend catalogue (src/data/catalog.js:2508-2532) defines stockForSize():
+    - If product.sizeStock is present, use those explicit values.
+    - Otherwise derive deterministically from total stock using derivedStockForSize().
+
+  derivedStockForSize() uses a fixed size distribution:
     [0.16, 0.22, 0.26, 0.18, 0.11, 0.07]
-  A few SKUs intentionally have a sold-out extremity so variant handling is real:
+
+  A few SKUs intentionally have a sold-out extremity:
     (char_code_of_last_id_char + size_index) % 11 == 0  => stock 0 for that size.
 
-  This script replicates the same derivation so database per-size stock matches
-  what the frontend computes. No values are fabricated.
+  This script replicates the same logic. No values are fabricated.
 """
 
 import json
@@ -28,7 +31,7 @@ EXTRACT_PATH = Path(__file__).resolve().parent / "catalog-extract.json"
 DISTRIBUTION = [0.16, 0.22, 0.26, 0.18, 0.11, 0.07]
 
 
-def derived_stock_for_size(total_stock: int, sizes: list, size: str) -> int:
+def derived_stock_for_size(total_stock: int, sizes: list, size: str, product_id: str) -> int:
     """Replicate frontend derivedStockForSize() deterministically."""
     if not sizes:
         return 0
@@ -42,7 +45,27 @@ def derived_stock_for_size(total_stock: int, sizes: list, size: str) -> int:
     total_weight = sum(weights)
     raw = (total_stock * weights[i]) / total_weight
     # Sold-out extremity rule: (char_code_of_last_id_char + size_index) % 11 == 0
-    return 0 if (ord("X") + i) % 11 == 0 else max(0, round(raw))
+    return 0 if (ord(product_id[-1]) + i) % 11 == 0 else max(0, round(raw))
+
+
+def per_size_stock(product: dict) -> dict:
+    """Return {size: stock} for a product, matching frontend stockForSize().
+
+    Respects explicit product.sizeStock when present; otherwise derives
+    per-size stock deterministically.
+    """
+    sizes = product.get("sizes", [])
+    total_stock = int(product.get("stock", 0))
+    product_id = product["id"]
+
+    explicit = product.get("sizeStock")
+    if explicit:
+        return {size: max(0, int(explicit.get(size, 0) or 0)) for size in sizes}
+
+    return {
+        size: derived_stock_for_size(total_stock, sizes, size, product_id)
+        for size in sizes
+    }
 
 
 def _map_seller(s: dict) -> dict:
@@ -156,12 +179,8 @@ def seed() -> None:
         row = _map_product(p)
         upsert_product(row)
         sizes = p.get("sizes", [])
-        total_stock = int(p.get("stock", 0))
-        for size in sizes:
-            # Derive per-size stock deterministically (matches frontend).
-            # Never assign total product stock to every size.
-            size_stock = derived_stock_for_size(total_stock, sizes, size)
-            upsert_product_size(p["id"], size, size_stock)
+        for size, stock in per_size_stock(p).items():
+            upsert_product_size(p["id"], size, stock)
 
     print(f"Done. Seeded {len(sellers)} sellers, {len(products)} products.")
 

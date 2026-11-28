@@ -11,7 +11,8 @@ class CartItemIn(BaseModel):
 
 class BundleRecommendRequest(BaseModel):
     cart_items: list[CartItemIn] = Field(..., min_length=1)
-    cart_subtotal: float | None = Field(default=None, ge=0)
+    cart_subtotal: float | None = Field(default=None, ge=0, description="Client-provided subtotal; diagnostic only, never used for gate enforcement")
+    cart_session_id: str | None = Field(default=None, description="Frontend-generated cart/session UUID; a new UUID is generated per request when omitted")
     limit: int = Field(default=3, ge=1, le=10)
 
 
@@ -39,14 +40,16 @@ class BundleRecommendationOut(BaseModel):
 
 class BundleRecommendResponse(BaseModel):
     recommendations: list[BundleRecommendationOut]
-    cart_subtotal: float
+    cart_subtotal: float = Field(description="Server-calculated subtotal from DB prices and quantities")
+    client_subtotal: float | None = Field(default=None, description="Client-provided subtotal; diagnostic only")
     deep_bundle_gate: int
-    gate_met: bool
+    gate_met: bool = Field(description="Enforced using server-calculated subtotal only")
     offers_enabled: bool
 
 
 class BundleAcceptRequest(BaseModel):
     recommendation_id: int
+    order_id: str | None = Field(default=None, description="Order ID once an order is placed; acceptance stands alone as a cart action until then")
 
 
 class BundleAcceptResponse(BaseModel):

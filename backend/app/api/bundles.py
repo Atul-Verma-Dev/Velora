@@ -1,5 +1,7 @@
 """Complete the Look bundle recommendation API."""
 
+import uuid
+
 from fastapi import APIRouter, HTTPException
 
 from app.core.config import get_settings
@@ -7,8 +9,8 @@ from app.repositories.bundle import (
     save_recommendations,
     mark_accepted,
     mark_rejected,
-    get_bundle_acceptance_count,
     get_bundle_recommendation_count,
+    get_bundle_acceptance_count,
 )
 from app.repositories.inventory import get_aging_inventory
 from app.repositories.product import get_products_by_skus, get_product_sizes
@@ -33,6 +35,11 @@ def recommend_bundles(req: BundleRecommendRequest):
 
     Cart items must include sku, size, and qty. Each product is fetched from the
     database to get full attributes (embedding, colour family, occasion, etc.).
+
+    The cart subtotal is always calculated server-side from database product
+    prices and verified quantities. The client-provided cart_subtotal is
+    preserved only as diagnostic information and is never used for discount
+    eligibility.
     """
     cart_skus = [item.sku for item in req.cart_items]
     products = {p["sku"]: p for p in get_products_by_skus(cart_skus)}
@@ -57,6 +64,12 @@ def recommend_bundles(req: BundleRecommendRequest):
             }
         )
 
+    # Server-calculated subtotal from database prices and verified quantities.
+    server_subtotal = sum(
+        float(p.get("price", 0)) * int(item.qty)
+        for p, item in zip([products[i.sku] for i in req.cart_items], req.cart_items)
+    )
+
     candidates = get_aging_inventory(min_age=60, limit=200)
     candidate_skus = [c["sku"] for c in candidates]
     cand_sizes = get_product_sizes(candidate_skus)
@@ -66,8 +79,10 @@ def recommend_bundles(req: BundleRecommendRequest):
 
     recs = recommend(cart_lines, candidates, limit=req.limit)
 
-    # Persist recommendations and pair each with its database-generated ID.
-    cart_id = "+".join(cart_skus)
+    # Accept a frontend-generated cart/session UUID or generate a new one per
+    # request. Size and quantity variations cannot collide because each request
+    # gets its own session identifier.
+    cart_id = req.cart_session_id or str(uuid.uuid4())
     rec_ids = save_recommendations(
         [
             {
@@ -110,14 +125,13 @@ def recommend_bundles(req: BundleRecommendRequest):
         for rec_id, r in zip(rec_ids, recs)
     ]
 
-    cart_subtotal = req.cart_subtotal or sum(
-        float(p.get("price", 0)) * int(item.qty) for p, item in zip([products[i.sku] for i in req.cart_items], req.cart_items)
-    )
-    gate_met = cart_subtotal >= settings.deep_bundle_gate
+    # Deep-tier gate is enforced using the server-calculated subtotal only.
+    gate_met = server_subtotal >= settings.deep_bundle_gate
 
     return BundleRecommendResponse(
         recommendations=out,
-        cart_subtotal=cart_subtotal,
+        cart_subtotal=server_subtotal,
+        client_subtotal=req.cart_subtotal,
         deep_bundle_gate=settings.deep_bundle_gate,
         gate_met=gate_met,
         offers_enabled=settings.offers_enabled,
@@ -126,7 +140,13 @@ def recommend_bundles(req: BundleRecommendRequest):
 
 @router.post("/accept", response_model=BundleAcceptResponse)
 def accept_bundle(req: BundleAcceptRequest):
-    ok = mark_accepted(req.recommendation_id)
+    """Accept a bundle recommendation.
+
+    Acceptance means the shopper added the candidate to their bag. It is
+    distinct from order placement. An order_id can be supplied once an order
+    is persisted; until then the acceptance stands alone as a cart action.
+    """
+    ok = mark_accepted(req.recommendation_id, order_id=req.order_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Recommendation not found")
     return BundleAcceptResponse(

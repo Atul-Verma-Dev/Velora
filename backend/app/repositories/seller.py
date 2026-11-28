@@ -37,13 +37,17 @@ def seller_metrics(seller_id: str) -> dict:
         )
         product_stats = dict(cur.fetchone())
 
+        # Seller-specific line-item revenue. An order's total is never attributed
+        # to a seller who did not sell any line in it. Cancelled orders are
+        # excluded from gross sales; returned orders are tracked separately as
+        # refunds; delivered orders are tracked as delivered sales.
         cur.execute(
             """
             SELECT
-                COUNT(*) AS orders,
-                COALESCE(SUM(total) FILTER (WHERE status <> 'Cancelled'), 0) AS gross_sales,
-                COALESCE(SUM(total) FILTER (WHERE status = 'Delivered'), 0) AS delivered_sales,
-                COALESCE(SUM(total) FILTER (WHERE status = 'Returned'), 0) AS refunds
+                COUNT(DISTINCT o.id) AS orders,
+                COALESCE(SUM(oi.price * oi.qty) FILTER (WHERE o.status <> 'Cancelled'), 0) AS gross_sales,
+                COALESCE(SUM(oi.price * oi.qty) FILTER (WHERE o.status = 'Delivered'), 0) AS delivered_sales,
+                COALESCE(SUM(oi.price * oi.qty) FILTER (WHERE o.status = 'Returned'), 0) AS refunds
             FROM order_items oi
             JOIN orders o ON o.id = oi.order_id
             WHERE oi.seller_id = %s
@@ -52,7 +56,11 @@ def seller_metrics(seller_id: str) -> dict:
         )
         order_stats = dict(cur.fetchone())
 
-        rec_total = product_stats_placeholder = 0
+        # Bundle metrics are attributed to the candidate product's seller. A
+        # recommendation presents the candidate item to the shopper; acceptance
+        # means the shopper added that candidate to their bag. The candidate's
+        # seller is the one who benefits from the bundle sale. This avoids
+        # double-counting by not also crediting the base product's seller.
         cur.execute(
             """
             SELECT COUNT(*) AS n
