@@ -24,6 +24,13 @@ export async function sellerLiquidation(sellerId, minAge = 60) {
   return api.get(`/api/v1/seller/${encodeURIComponent(sellerId)}/liquidation?min_age=${minAge}`);
 }
 
+// Realised Complete-the-Look outcomes: capital liquidated from aging stock and the
+// reverse-logistics cost avoided on those units.
+export async function sellerLiquidationSummary(sellerId) {
+  if (!isBackendEnabled()) return null;
+  return api.get(`/api/v1/seller/${encodeURIComponent(sellerId)}/liquidation/summary`);
+}
+
 export async function agingInventory(minAge = 60, limit = 100) {
   if (!isBackendEnabled()) return null;
   return api.get(`/api/v1/inventory/aging?min_age=${minAge}&limit=${limit}`);

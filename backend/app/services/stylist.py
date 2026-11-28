@@ -6,9 +6,12 @@ Pipeline:
   3. Exclude the primary product itself.
   4. Check stock availability (exact size or one-size).
   5. Determine aesthetic compatibility:
-       - vector path: cosine similarity of embeddings, threshold 0.78
+       - vector path: cosine similarity of image embeddings gates the candidate
+         (threshold from settings.aesthetic_threshold, calibrated on this catalogue)
        - metadata path: deterministic colour/occasion/gender/category score, threshold 0.60
-  6. Consider colour, fabric, category, occasion and product attributes.
+  6. Consider colour, fabric, category, occasion and product attributes: the vector
+     gate decides *whether* a piece is visually coherent, the metadata score decides
+     whether it is actually complementary, and ranking blends the two.
   7. Rank eligible recommendations.
   8. Pass candidates to the pricing engine.
 
@@ -20,6 +23,13 @@ from app.repositories.product import get_products_by_skus, stock_for_size
 from app.services.pricing import compute_offer, deep_tier_gate_met, tier_for
 
 settings = get_settings()
+
+# Ranking blend. The image embedding captures visual coherence (palette, studio
+# treatment, silhouette family); the metadata score captures whether the piece is a
+# genuine complement (complementary subcategory, shared occasion, colour tone).
+# The vector threshold gates eligibility; this blend orders what passes.
+VECTOR_WEIGHT = 0.6
+META_WEIGHT = 0.4
 
 # Colour tone affinity map (ported from frontend ctl.js).
 COLOUR_TONE = {
@@ -110,6 +120,10 @@ def _compatible_size_and_base(cart_lines: list[dict], candidate: dict):
     best = None
     for line in cart_lines:
         base = line.get("product") or {}
+        # Two SKUs sharing one photograph are duplicate listings of the same garment,
+        # not a complementary piece, so they are never offered as a bundle.
+        if base.get("image_url") and base.get("image_url") == candidate.get("image_url"):
+            continue
         line_size = line.get("size")
         if is_one_size:
             size = "One size"
@@ -175,9 +189,11 @@ def recommend(
         vector_sim = _cosine_similarity(base_emb, cand_emb) if base_emb and cand_emb else None
 
         if vector_sim is not None:
-            compat_score = round(float(vector_sim), 3)
-            if compat_score < vec_threshold:
+            if float(vector_sim) < vec_threshold:
                 continue
+            compat_score = round(
+                VECTOR_WEIGHT * float(vector_sim) + META_WEIGHT * meta_score, 3
+            )
             scoring_mode = "vector"
         else:
             compat_score = meta_score
@@ -212,6 +228,8 @@ def recommend(
             "colour_family": candidate.get("colour_family"),
             "size": size,
             "compat_score": compat_score,
+            "vector_similarity": None if vector_sim is None else round(float(vector_sim), 3),
+            "metadata_score": meta_score,
             "scoring_mode": scoring_mode,  # "vector" | "metadata"
             "base_sku": str(base.get("sku")),
             "mrp": offer["mrp"],

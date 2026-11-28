@@ -70,7 +70,7 @@ def recommend_bundles(req: BundleRecommendRequest):
         for p, item in zip([products[i.sku] for i in req.cart_items], req.cart_items)
     )
 
-    candidates = get_aging_inventory(min_age=60, limit=200)
+    candidates = get_aging_inventory(min_age=60, limit=200, include_embedding=True)
     candidate_skus = [c["sku"] for c in candidates]
     cand_sizes = get_product_sizes(candidate_skus)
     for c in candidates:
@@ -115,6 +115,8 @@ def recommend_bundles(req: BundleRecommendRequest):
             colour_family=r["colour_family"],
             size=r["size"],
             compat_score=r["compat_score"],
+            scoring_mode=r.get("scoring_mode"),
+            vector_similarity=r.get("vector_similarity"),
             mrp=r["mrp"],
             price=r["price"],
             discount_pct=r["discount_pct"],

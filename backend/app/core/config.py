@@ -24,9 +24,16 @@ class Settings(BaseSettings):
     # Complete the Look
     deep_bundle_gate: int = 2000
     offers_enabled: bool = True
-    aesthetic_threshold: float = 0.78
+    # Calibrated on this catalogue's image embeddings: cosine p50 = 0.69 and
+    # p90 = 0.78 across live products, while genuine complementary pairs score
+    # 0.66-0.76. 0.72 keeps the gate above the median without hiding every real
+    # pairing (see scripts/embed_catalogue.py --calibrate-only).
+    aesthetic_threshold: float = 0.72
     metadata_compat_threshold: float = 0.60
     default_marginal_shipping: int = 45
+    # Assumed cost of one returned unit (reverse pickup + QC + re-listing), used to
+    # value the reverse logistics avoided when an aging piece sells in a bundle.
+    reverse_logistics_cost: int = 150
 
     class Config:
         env_file = ".env"

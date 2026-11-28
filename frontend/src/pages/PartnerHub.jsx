@@ -11,7 +11,7 @@ import { useApp } from "../store/AppStore.jsx";
 import { stockForSize } from "../data/catalog.js";
 import { money, formatDate } from "../lib/format.js";
 import { floorPrice, offerPrice, tierFor, visualCompatibility } from "../lib/ctl.js";
-import { sellerMetrics, sellerLiquidation, backendEnabled as sellerBackendEnabled } from "../lib/api/seller.js";
+import { sellerLiquidation, sellerLiquidationSummary, backendEnabled as sellerBackendEnabled } from "../lib/api/seller.js";
 import {
   Badge, Btn, Chip, EmptyState, Field, InfoNote, Modal, PageHead, Progress, Stat,
   StatusPill, Tabs,
@@ -351,7 +351,7 @@ export default function PartnerHub() {
     moderateSeller, adjustStock, ledger, config, updateSeller, notify, can, role, updateOrderStatus,
   } = useApp();
   const nav = useNavigate();
-  const [backendSellerMetrics, setBackendSellerMetrics] = useState(null);
+  const [backendLiquidationSummary, setBackendLiquidationSummary] = useState(null);
   const [backendLiquidation, setBackendLiquidation] = useState(null);
   const [backendSellerError, setBackendSellerError] = useState(null);
 
@@ -397,6 +397,11 @@ export default function PartnerHub() {
   const rejected = mine.filter((p) => p.status === "rejected");
   const backendAgingList = backendLiquidation ? (backendLiquidation.results || backendLiquidation || []).map(toPartnerProduct) : [];
   const aging = sellerBackendEnabled() ? backendAgingList : live.filter((p) => p.stockAgeDays >= 60 && p.stock > 0);
+  // Capital recovered, measured at cost so it compares with the aging-capital figure.
+  const liquidatedSharePct =
+    backendLiquidationSummary && Number(backendLiquidationSummary.aging_capital_at_cost) > 0
+      ? Math.min(100, Math.round((Number(backendLiquidationSummary.cogs_released) / Number(backendLiquidationSummary.aging_capital_at_cost)) * 1000) / 10)
+      : 0;
   const grossSales = myOrders.filter((o) => !["Cancelled"].includes(o.status)).reduce((s, o) => s + sellerTotal(o), 0);
   const myReviews = useMemo(
     () => Object.entries(reviews).flatMap(([pid, list]) =>
@@ -425,12 +430,12 @@ export default function PartnerHub() {
     let cancelled = false;
     setBackendSellerError(null);
     Promise.all([
-      sellerMetrics(SELLER_ID).then((d) => { if (!cancelled) setBackendSellerMetrics(d); }),
       sellerLiquidation(SELLER_ID, 60).then((d) => { if (!cancelled) setBackendLiquidation(d); }),
+      sellerLiquidationSummary(SELLER_ID).then((d) => { if (!cancelled) setBackendLiquidationSummary(d); }),
     ]).catch((err) => {
       if (cancelled) return;
       // Do not present stale local metrics as current backend data.
-      setBackendSellerMetrics(null);
+      setBackendLiquidationSummary(null);
       setBackendLiquidation(null);
       setBackendSellerError(err.message || "Backend seller data unavailable");
     });
@@ -849,9 +854,48 @@ export default function PartnerHub() {
               </div>
               <div className="stat-grid partner-stats">
                 <Stat label="Eligible candidates" value={aging.length} note="60+ days, in stock" icon={<Sparkles size={15} />} />
-                <Stat label="Potential capital released" value={money(aging.reduce((s, p) => s + offerPrice(p, config).price * p.stock, 0))} note="At current offer prices" icon={<TrendingUp size={15} />} />
-                <Stat label="Offers presented" value={backendSellerMetrics?.bundle_presented ?? 0} note={backendSellerMetrics ? "From server events" : "Not instrumented in this demo"} icon={<BarChart3 size={15} />} />
-                <Stat label="Bundle attach rate" value={backendSellerMetrics ? `${backendSellerMetrics.bundle_attach_rate}%` : "—"} note={backendSellerMetrics ? "Accepted / presented" : "Requires server events"} />
+                <Stat label="Capital at risk" value={money(aging.reduce((s, p) => s + p.cogs * p.stock, 0))} note="COGS tied up in 60+ day stock" icon={<Clock3 size={15} />} />
+                <Stat label="Capital liquidated" value={backendLiquidationSummary ? money(backendLiquidationSummary.capital_liquidated) : "—"} note={backendLiquidationSummary ? `${backendLiquidationSummary.units_liquidated} bundle unit(s) accepted` : "Requires server events"} icon={<Banknote size={15} />} />
+                <Stat label="Reverse-logistics saved" value={backendLiquidationSummary ? money(backendLiquidationSummary.reverse_logistics_saved) : "—"} note={backendLiquidationSummary ? `${money(backendLiquidationSummary.reverse_logistics_cost)} avoided return per unit` : "Requires server events"} icon={<RotateCcw size={15} />} />
+              </div>
+              <div className="panel-card">
+                <div className="panel-head"><b>Liquidation impact</b><span>From stored bundle acceptances</span></div>
+                {!backendLiquidationSummary ? (
+                  <EmptyState compact title="Liquidation summary unavailable" body={backendSellerError || "Run the backend with VITE_API_BACKEND=true to read realised bundle outcomes."} />
+                ) : (
+                  <>
+                    <div className="stat-grid partner-stats">
+                      <Stat label="Contribution released" value={money(backendLiquidationSummary.contribution_released)} note="Offer price − COGS − shipping" icon={<TrendingUp size={15} />} />
+                      <Stat label="COGS recovered" value={money(backendLiquidationSummary.cogs_released)} note="At cost, units accepted into bags" icon={<Wallet size={15} />} />
+                      <Stat label="Offers presented" value={backendLiquidationSummary.presented} note="Server-instrumented" icon={<BarChart3 size={15} />} />
+                      <Stat label="Bundle attach rate" value={`${backendLiquidationSummary.attach_rate_pct}%`} note="Accepted / presented" />
+                    </div>
+                    <div style={{ padding: "0 18px 18px" }}>
+                      <Progress value={liquidatedSharePct} label={`${liquidatedSharePct}% of aging capital at cost recovered through bundles`} />
+                    </div>
+                    {backendLiquidationSummary.recent?.length ? (
+                      <div className="responsive-table">
+                        <table className="data-table">
+                          <thead><tr><th>Liquidated bundle</th><th>Age</th><th>Tier</th><th>Offer</th><th>Saving</th><th>Reverse saved</th></tr></thead>
+                          <tbody>
+                            {backendLiquidationSummary.recent.map((r) => (
+                              <tr key={r.recommendation_id}>
+                                <td><div className="table-product"><img src={r.image_url} alt="" /><span><b>{r.name}</b><small>{r.sku} · size {r.size}</small></span></div></td>
+                                <td>{r.days_in_inventory}d</td>
+                                <td><Badge tone="neutral">{r.tier_label}</Badge></td>
+                                <td><b>{money(r.price)}</b><small className="block-muted">was {money(r.mrp)}</small></td>
+                                <td>{money(r.saving)}</td>
+                                <td>{money(backendLiquidationSummary.reverse_logistics_cost)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <EmptyState compact title="No bundles accepted yet" body="Accept a Complete the Look offer in the cart and it is recorded here against this seller." />
+                    )}
+                  </>
+                )}
               </div>
               <div className="panel-card">
                 <div className="panel-head"><b>Eligibility & private economics</b><span>Seller-only view</span></div>
@@ -881,13 +925,15 @@ export default function PartnerHub() {
               </div>
               <div className="ctl-rules">
                 <div><Check size={14} /><b>Size match</b><p>Exact shopper size, or one-size accessories. No size guessing.</p></div>
-                <div><Check size={14} /><b>Visual compatibility</b><p>Palette and occasion coherence, with a similarity threshold above 0.78 in production.</p></div>
+                <div><Check size={14} /><b>Visual compatibility</b><p>Image-embedding similarity gate at 0.72, calibrated on this catalogue, blended with palette and occasion.</p></div>
                 <div><Check size={14} /><b>Margin floor</b><p>Offer price never falls below COGS + marginal shipping. The deepest tier needs a cart-value gate.</p></div>
                 <div><Check size={14} /><b>No dark patterns</b><p>Optional add-on, removable, price difference visible, never preselected.</p></div>
               </div>
-              <InfoNote tone="warning" title="Honest limitation">
-                The compatibility score in this prototype is a deterministic palette/occasion heuristic, not a model embedding.
-                Performance metrics require server-instrumented presentation and purchase events, which this demo does not have.
+              <InfoNote tone="warning" title="What is measured, what is assumed">
+                Every listing carries a Gemini image embedding, so compatibility is a real vector score (gated at 0.72) blended with a
+                palette/occasion heuristic. Capital liquidated and reverse-logistics saved are computed from stored bundle acceptances.
+                The per-return cost is a stated assumption, not an observed invoice, and historical bundle outcomes are empty until a shopper
+                accepts an offer.
               </InfoNote>
             </>
           )}

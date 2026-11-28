@@ -134,12 +134,26 @@ export default function Checkout() {
       price: shipping,
     };
 
+    // If backend mode is on, forward the accepted Complete the Look offers
+    // that the cart accepted earlier via the backend acceptBundle call.
+    let backendOfferReferences = null;
+    if (backendMode) {
+      backendOfferReferences = cart
+        .filter((l) => l.offer && l.recommendationId != null)
+        .map((l) => ({
+          recommendation_id: Number(l.recommendationId),
+          sku: l.productId,
+          size: l.size,
+        }));
+    }
+
     const result = await placeOrder({
       address: addr,
       contact: addr.phone,
       payment: paymentLabel,
       delivery: deliveryPayload,
       coupon: coupon || null,
+      offerReferences: backendOfferReferences,
     });
 
     // Never navigate before a real order ID is returned.

@@ -26,7 +26,9 @@ class BundleRecommendationOut(BaseModel):
     colour: str | None
     colour_family: str | None
     size: str
-    compat_score: float = Field(ge=0, le=1)
+    compat_score: float = Field(ge=0, le=1, description="Blended compatibility used for ranking")
+    scoring_mode: str | None = Field(default=None, description="'vector' when an embedding similarity gated this candidate, else 'metadata'")
+    vector_similarity: float | None = Field(default=None, description="Raw image-embedding cosine similarity, when available")
     mrp: float = Field(description="Original price (MRP)")
     price: float = Field(description="Actual final selling price after discount + floor")
     discount_pct: int = Field(description="Actual discount percentage applied")

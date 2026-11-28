@@ -170,7 +170,9 @@ def upsert_product(row: dict) -> None:
                 status = EXCLUDED.status,
                 is_featured = EXCLUDED.is_featured,
                 added_days_ago = EXCLUDED.added_days_ago,
-                embedding = EXCLUDED.embedding,
+                -- A seed row without a vector must never wipe one that was generated
+                -- later (scripts/embed_catalogue.py); only a real vector overwrites.
+                embedding = COALESCE(EXCLUDED.embedding, products.embedding),
                 updated_at = now()
             """,
             row,

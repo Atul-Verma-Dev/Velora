@@ -250,7 +250,7 @@ export function AppProvider({ children }) {
   }, []);
 
   // ---- checkout --------------------------------------------------------
-  const placeOrder = useCallback(async ({ address, payment, delivery, contact, coupon: couponArg }) => {
+  const placeOrder = useCallback(async ({ address, payment, delivery, contact, coupon: couponArg, offerReferences }) => {
     if (!cart.length) return null;
 
     if (productsBackendEnabled()) {
@@ -380,7 +380,7 @@ export function AppProvider({ children }) {
 
       items: backendItems,
 
-      offer_references: offerReferences,
+      offer_references: offerReferences || [],
 
       // The backend validates the coupon and calculates
       // the discount independently.

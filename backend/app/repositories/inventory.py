@@ -3,14 +3,23 @@
 from app.core.db import db_cursor
 
 
-def get_aging_inventory(min_age: int = 60, limit: int = 100):
-    """Products eligible for Complete the Look (age >= 60 days, live, stock > 0)."""
-    with db_cursor() as cur:
-        cur.execute(
-            """
-            SELECT sku, name, brand, gender, category, subcategory, colour, colour_family,
+def get_aging_inventory(min_age: int = 60, limit: int = 100, include_embedding: bool = False):
+    """Products eligible for Complete the Look (age >= 60 days, live, stock > 0).
+
+    Embeddings are only selected for the stylist (include_embedding=True); the
+    public aging endpoint must not ship 768-float vectors per row.
+    """
+    columns = """
+                   sku, name, brand, gender, category, subcategory, colour, colour_family,
                    occasion, image_url, mrp, price, cogs, marginal_shipping, stock,
                    days_in_inventory, units_sold_30d, seller_id, status
+    """
+    if include_embedding:
+        columns += ", embedding"
+    with db_cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT {columns}
             FROM products
             WHERE status = 'live'
               AND days_in_inventory >= %s

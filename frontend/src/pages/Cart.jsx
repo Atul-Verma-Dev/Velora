@@ -103,20 +103,13 @@ export default function Cart() {
 
   const addSuggestion = async (c) => {
     if (c._source === "backend") {
-      const product = products.find((p) => p.id === c.product.id);
-      if (!product) return;
       const key = `${c.product.id}::${c.size}`;
-      const existing = cart.find((l) => `${l.productId}::${l.size}` === key);
-      if (existing) {
+      if (cart.some((l) => `${l.productId}::${l.size}` === key)) {
         notify("That offer is already in your bag.", "error");
         return;
       }
-      const available = Math.min(product.stock, stockForSize(product, c.size));
-      if (available === 0) {
-        notify(`Size ${c.size} is out of stock.`, "error");
-        return;
-      }
-      // Revalidate stock via backend before accepting.
+      // Confirm the backend offer before adding it to the bag: this is the link
+      // between the shopper UI and the stored Complete the Look event.
       if (c.recommendationId != null) {
         try {
           await acceptBundle(c.recommendationId);
@@ -125,8 +118,9 @@ export default function Cart() {
           return;
         }
       }
-      setCart((old) => [...old, { productId: c.product.id, size: c.size, qty: 1, price: c.price, offer: true, recommendationId: c.recommendationId }]);
-      notify(`Added at your offer price · ${c.product.name}`);
+      // Add through the store so stock, floor and one-per-order rules are enforced
+      // in one place (its offer price is the same tier price the backend quoted).
+      if (!addToCart(c.product, c.size, 1, { offer: true })) return;
       setDismissed((d) => [...d, c.product.id]);
       return;
     }

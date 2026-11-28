@@ -1,0 +1,347 @@
+{
+  "orders": [
+    {
+      "id": "VLR-24091182",
+      "date": "18 Nov 2026",
+      "placedAt": "2026-11-18",
+      "status": "Delivered",
+      "payment": "UPI (demo)",
+      "address": "12B, Sunder Nagar, Bandra West, Mumbai 400050",
+      "contact": "+91 98200 11223",
+      "delivery": "Standard delivery · free",
+      "total": 1899,
+      "userId": "user-demo",
+      "tracking": [
+        {
+          "label": "Order placed",
+          "date": "18 Nov, 10:12",
+          "done": true
+        },
+        {
+          "label": "Packed by House of Aranya",
+          "date": "18 Nov, 16:40",
+          "done": true
+        },
+        {
+          "label": "Shipped",
+          "date": "19 Nov, 09:05",
+          "done": true
+        },
+        {
+          "label": "Delivered",
+          "date": "22 Nov, 14:20",
+          "done": true
+        }
+      ],
+      "items": [
+        {
+          "id": "VLR-3001",
+          "name": "Marigold Handblock Kurta",
+          "brand": "House of Aranya",
+          "price": 1899,
+          "qty": 1,
+          "size": "M",
+          "colour": "Marigold",
+          "image": "/images/aranya-marigold-kurta.jpg",
+          "sellerId": "seller-1",
+          "sellerName": "House of Aranya"
+        }
+      ]
+    },
+    {
+      "id": "VLR-24090744",
+      "date": "14 Nov 2026",
+      "placedAt": "2026-11-14",
+      "status": "Shipped",
+      "payment": "Card (demo)",
+      "address": "12B, Sunder Nagar, Bandra West, Mumbai 400050",
+      "contact": "+91 98200 11223",
+      "delivery": "Express delivery · ₹99",
+      "subtotal": 4398,
+      "discount": 0,
+      "shipping": 99,
+      "total": 4497,
+      "userId": "user-demo",
+      "tracking": [
+        {
+          "label": "Order placed",
+          "date": "14 Nov, 19:02",
+          "done": true
+        },
+        {
+          "label": "Packed by Morrow Studio",
+          "date": "15 Nov, 11:30",
+          "done": true
+        },
+        {
+          "label": "Shipped",
+          "date": "16 Nov, 08:15",
+          "done": true
+        },
+        {
+          "label": "Out for delivery",
+          "date": "Expected 26 Nov",
+          "done": false
+        },
+        {
+          "label": "Delivered",
+          "date": "Expected 26 Nov",
+          "done": false
+        }
+      ],
+      "items": [
+        {
+          "id": "VLR-1001",
+          "name": "Marlowe Oxford Shirt",
+          "brand": "Morrow Studio",
+          "price": 1899,
+          "qty": 1,
+          "size": "M",
+          "colour": "Ecru",
+          "image": "/images/velora-oxford-shirt.jpg",
+          "sellerId": "seller-3",
+          "sellerName": "Morrow Studio"
+        },
+        {
+          "id": "VLR-1007",
+          "name": "Pleated Wool Trouser",
+          "brand": "Morrow Studio",
+          "price": 2499,
+          "qty": 1,
+          "size": "32",
+          "colour": "Ink",
+          "image": "/images/velora-wool-trouser.jpg",
+          "sellerId": "seller-3",
+          "sellerName": "Morrow Studio"
+        }
+      ]
+    },
+    {
+      "id": "VLR-24090117",
+      "date": "06 Nov 2026",
+      "placedAt": "2026-11-06",
+      "status": "Returned",
+      "payment": "UPI (demo)",
+      "address": "12B, Sunder Nagar, Bandra West, Mumbai 400050",
+      "contact": "+91 98200 11223",
+      "delivery": "Standard delivery · free",
+      "total": 2699,
+      "userId": "user-demo",
+      "tracking": [
+        {
+          "label": "Order placed",
+          "date": "06 Nov, 12:44",
+          "done": true
+        },
+        {
+          "label": "Shipped",
+          "date": "07 Nov, 10:12",
+          "done": true
+        },
+        {
+          "label": "Delivered",
+          "date": "10 Nov, 17:38",
+          "done": true
+        },
+        {
+          "label": "Return picked up",
+          "date": "12 Nov, 11:00",
+          "done": true
+        },
+        {
+          "label": "Refunded to source",
+          "date": "15 Nov, 16:02",
+          "done": true
+        }
+      ],
+      "returnReason": "Fit — too long",
+      "refund": 2699,
+      "items": [
+        {
+          "id": "VLR-2002",
+          "name": "Bias-Cut Midi Dress",
+          "brand": "Meher Atelier",
+          "price": 2699,
+          "qty": 1,
+          "size": "M",
+          "colour": "Rust",
+          "image": "/images/meher-dress.jpg",
+          "sellerId": "seller-4",
+          "sellerName": "Meher Atelier"
+        }
+      ]
+    },
+    {
+      "id": "VLR-24092301",
+      "date": "23 Nov 2026",
+      "placedAt": "2026-11-23",
+      "status": "Processing",
+      "payment": "Cash on delivery (demo)",
+      "address": "14, Pocket C, Vasant Kunj, New Delhi 110070",
+      "contact": "+91 98110 44556",
+      "delivery": "Standard delivery · free",
+      "total": 3899,
+      "userId": "user-demo",
+      "tracking": [
+        {
+          "label": "Order placed",
+          "date": "23 Nov, 21:18",
+          "done": true
+        },
+        {
+          "label": "Awaiting seller acceptance",
+          "date": "Due 25 Nov",
+          "done": false
+        },
+        {
+          "label": "Packed",
+          "date": "—",
+          "done": false
+        },
+        {
+          "label": "Shipped",
+          "date": "—",
+          "done": false
+        },
+        {
+          "label": "Delivered",
+          "date": "—",
+          "done": false
+        }
+      ],
+      "items": [
+        {
+          "id": "VLR-3006",
+          "name": "Chikankari Co-ord Set",
+          "brand": "House of Aranya",
+          "price": 3899,
+          "qty": 1,
+          "size": "L",
+          "colour": "Ivory",
+          "image": "/images/aranya-chikankari-coord.jpg",
+          "sellerId": "seller-1",
+          "sellerName": "House of Aranya"
+        }
+      ]
+    },
+    {
+      "id": "VLR-24112601",
+      "date": "25 Nov 2026",
+      "placedAt": "2026-11-25",
+      "status": "Processing",
+      "payment": "UPI (demo)",
+      "address": "12B, Sunder Nagar, Bandra West, Mumbai 400050",
+      "contact": "+91 98200 11223",
+      "delivery": "Express delivery · ₹99",
+      "subtotal": 5298,
+      "discount": 0,
+      "shipping": 99,
+      "total": 5397,
+      "userId": "user-demo",
+      "tracking": [
+        {
+          "label": "Order placed",
+          "date": "25 Nov, 09:40",
+          "done": true
+        },
+        {
+          "label": "Awaiting seller acceptance",
+          "date": "Within 24 hours",
+          "done": false
+        },
+        {
+          "label": "Packed",
+          "date": "—",
+          "done": false
+        },
+        {
+          "label": "Shipped",
+          "date": "—",
+          "done": false
+        },
+        {
+          "label": "Delivered",
+          "date": "—",
+          "done": false
+        }
+      ],
+      "items": [
+        {
+          "id": "VLR-4001",
+          "name": "Rosewater Chanderi Kurta",
+          "brand": "House of Aranya",
+          "price": 2499,
+          "qty": 1,
+          "size": "M",
+          "colour": "Rosewater",
+          "image": "/images/aranya-rosewater-saree.jpg",
+          "sellerId": "seller-1",
+          "sellerName": "House of Aranya"
+        },
+        {
+          "id": "VLR-4005",
+          "name": "Terracotta Linen Co-ord",
+          "brand": "Meher Atelier",
+          "price": 2799,
+          "qty": 1,
+          "size": "S",
+          "colour": "Terracotta",
+          "image": "/images/meher-coord.jpg",
+          "sellerId": "seller-4",
+          "sellerName": "Meher Atelier"
+        }
+      ]
+    },
+    {
+      "id": "VLR-24112202",
+      "date": "22 Nov 2026",
+      "placedAt": "2026-11-22",
+      "status": "Delivered",
+      "payment": "Card (demo)",
+      "address": "12B, Sunder Nagar, Bandra West, Mumbai 400050",
+      "contact": "+91 98200 11223",
+      "delivery": "Standard delivery · free",
+      "subtotal": 5499,
+      "discount": 0,
+      "shipping": 0,
+      "total": 5499,
+      "userId": "user-demo",
+      "tracking": [
+        {
+          "label": "Order placed",
+          "date": "22 Nov, 12:05",
+          "done": true
+        },
+        {
+          "label": "Packed",
+          "date": "22 Nov, 18:20",
+          "done": true
+        },
+        {
+          "label": "Shipped",
+          "date": "23 Nov, 08:10",
+          "done": true
+        },
+        {
+          "label": "Delivered",
+          "date": "25 Nov, 11:35",
+          "done": true
+        }
+      ],
+      "items": [
+        {
+          "id": "VLR-4007",
+          "name": "Charcoal Wool Blazer",
+          "brand": "Morrow Studio",
+          "price": 5499,
+          "qty": 1,
+          "size": "M",
+          "colour": "Charcoal",
+          "image": "/images/meher-blazer.jpg",
+          "sellerId": "seller-3",
+          "sellerName": "Morrow Studio"
+        }
+      ]
+    }
+  ]
+}

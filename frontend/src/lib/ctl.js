@@ -22,9 +22,11 @@ export const tierFor = (age) => OFFER_TIERS.find((t) => age >= t.min && age < t.
 export const floorPrice = (product, config = {}) =>
   Math.round((product.cogs || product.price * 0.35) + (product.marginalShipping || 40) + (config.extraCostPerUnit || 0));
 
+// Tier prices are a discount off MRP, exactly like the backend pricing engine
+// (app/services/pricing.py). Floor = COGS + marginal shipping.
 export function offerPrice(product, config = {}) {
   const tier = tierFor(product.stockAgeDays);
-  const tierPrice = Math.round(product.price * (1 - tier.discount));
+  const tierPrice = Math.round(product.mrp * (1 - tier.discount));
   return { tier, price: Math.max(tierPrice, floorPrice(product, config)), tierPrice, floor: floorPrice(product, config) };
 }
 
@@ -32,7 +34,7 @@ export function offerPrice(product, config = {}) {
 export function offerStillValid(product, line, config = {}) {
   if (!product || product.status !== "live" || config.offersEnabled === false) return false;
   if ((product.stockAgeDays || 0) < 60) return false;
-  return line.price >= floorPrice(product, config) && line.price < product.price;
+  return line.price >= floorPrice(product, config) && line.price < product.mrp;
 }
 
 const COLOUR_TONE = {
@@ -121,7 +123,7 @@ export function completeTheLook(products, cart, config = {}, profile = null) {
       if (stockForVariant < 1) return;
 
       const { tier, price } = offerPrice(candidate, config);
-      if (price >= candidate.price) return; // never "discount" upward
+      if (price >= candidate.mrp) return; // never "discount" upward
       if (tier.discount >= 0.6 && subtotal < gate) return;
 
       candidates.push({
