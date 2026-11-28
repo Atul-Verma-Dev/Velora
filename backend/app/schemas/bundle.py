@@ -18,6 +18,7 @@ class BundleRecommendRequest(BaseModel):
 
 class BundleRecommendationOut(BaseModel):
     recommendation_id: int = Field(description="Database-generated recommendation ID")
+    base_sku: str = Field(description="SKU of the base cart product this recommendation complements")
     sku: str
     name: str
     brand: str

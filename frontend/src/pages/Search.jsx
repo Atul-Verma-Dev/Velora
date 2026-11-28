@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import { useApp } from "../store/AppStore.jsx";
 import { explainIntent, search as runSearch, threadB } from "../lib/search.js";
+import { logSearchEvent } from "../lib/api/search.js";
 import { categories } from "../data/catalog.js";
 import { money } from "../lib/format.js";
 import { applyFilters, buildFacets, emptyFilters, SORT_OPTIONS } from "../lib/filters.js";
@@ -92,6 +93,18 @@ export default function Search() {
       excluded: res.excluded,
       durationMs: ms,
     });
+    // Also log to backend when the flag is enabled — non-blocking, local log is authoritative.
+    try {
+      await logSearchEvent({
+        query: query.trim() || "(image only)",
+        hasImage: Boolean(imageFile),
+        resultCount: res.results.length,
+        excluded: res.excluded,
+        durationMs: ms,
+      });
+    } catch {
+      // Backend unavailable — local search log remains the source of truth.
+    }
   };
 
   useEffect(() => {
@@ -99,7 +112,7 @@ export default function Search() {
     if (stateFile && !autoRan.current) {
       autoRan.current = true;
       setFile(stateFile);
-      analyse(stateFile).then((signals) => {
+      analyse(stateFile).then(async (signals) => {
         if (params.get("q")) run(stateFile);
         else if (signals) {
           // Nothing typed: search straight from the reference image.
@@ -112,6 +125,17 @@ export default function Search() {
             id: `s-${Date.now()}`, at: new Date().toLocaleString(), query: "(image only)",
             hasImage: true, resultCount: res.results.length, excluded: res.excluded, durationMs: 0,
           });
+          try {
+            await logSearchEvent({
+              query: "(image only)",
+              hasImage: true,
+              resultCount: res.results.length,
+              excluded: res.excluded,
+              durationMs: 0,
+            });
+          } catch {
+            // Backend unavailable — local search log remains the source of truth.
+          }
         }
       });
     } else if (params.get("q") && !autoRan.current) {

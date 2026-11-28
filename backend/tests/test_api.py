@@ -73,6 +73,9 @@ def test_bundle_recommend():
     for rec in data["recommendations"]:
         assert "recommendation_id" in rec
         assert isinstance(rec["recommendation_id"], int)
+        assert "base_sku" in rec
+        assert isinstance(rec["base_sku"], str)
+        assert len(rec["base_sku"]) > 0
 
 
 def test_fit_recommend():

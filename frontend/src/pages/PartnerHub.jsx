@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useEffect } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   AlertCircle, ArrowRight, ArrowUpRight, BarChart3, BadgeCheck, Banknote, Bell, Boxes,
@@ -11,6 +11,7 @@ import { useApp } from "../store/AppStore.jsx";
 import { stockForSize } from "../data/catalog.js";
 import { money, formatDate } from "../lib/format.js";
 import { floorPrice, offerPrice, tierFor, visualCompatibility } from "../lib/ctl.js";
+import { sellerMetrics, backendEnabled as sellerBackendEnabled } from "../lib/api/seller.js";
 import {
   Badge, Btn, Chip, EmptyState, Field, InfoNote, Modal, PageHead, Progress, Stat,
   StatusPill, Tabs,
@@ -388,6 +389,18 @@ export default function PartnerHub() {
   ]);
   const [newMember, setNewMember] = useState({ email: "", role: "Catalogue manager" });
   const [settingsDraft, setSettingsDraft] = useState({ orderAlerts: true, lowStockAlerts: true, payoutAlerts: true, returnAlerts: true, weeklyDigest: false });
+  const [backendSellerMetrics, setBackendSellerMetrics] = useState(null);
+
+  useEffect(() => {
+    if (section !== "complete-the-look" || !sellerBackendEnabled()) return;
+    let cancelled = false;
+    sellerMetrics(SELLER_ID).then((data) => {
+      if (!cancelled) setBackendSellerMetrics(data);
+    }).catch(() => {
+      // Backend unavailable — local stats remain the source of truth.
+    });
+    return () => { cancelled = true; };
+  }, [section, SELLER_ID]);
 
   const filteredCatalogue = mine.filter((p) => {
     const statusOk =
@@ -797,8 +810,8 @@ export default function PartnerHub() {
               <div className="stat-grid partner-stats">
                 <Stat label="Eligible candidates" value={aging.length} note="60+ days, in stock" icon={<Sparkles size={15} />} />
                 <Stat label="Potential capital released" value={money(aging.reduce((s, p) => s + offerPrice(p, config).price * p.stock, 0))} note="At current offer prices" icon={<TrendingUp size={15} />} />
-                <Stat label="Offers presented" value="0" note="Not instrumented in this demo" icon={<BarChart3 size={15} />} />
-                <Stat label="Bundle attach rate" value="—" note="Requires server events" />
+                <Stat label="Offers presented" value={backendSellerMetrics?.bundle_presented ?? 0} note={backendSellerMetrics ? "From server events" : "Not instrumented in this demo"} icon={<BarChart3 size={15} />} />
+                <Stat label="Bundle attach rate" value={backendSellerMetrics ? `${backendSellerMetrics.bundle_attach_rate}%` : "—"} note={backendSellerMetrics ? "Accepted / presented" : "Requires server events"} />
               </div>
               <div className="panel-card">
                 <div className="panel-head"><b>Eligibility & private economics</b><span>Seller-only view</span></div>

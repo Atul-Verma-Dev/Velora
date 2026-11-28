@@ -106,6 +106,7 @@ def recommend_bundles(req: BundleRecommendRequest):
     out = [
         BundleRecommendationOut(
             recommendation_id=rec_id,
+            base_sku=r["base_sku"],
             sku=r["sku"],
             name=r["name"],
             brand=r["brand"],

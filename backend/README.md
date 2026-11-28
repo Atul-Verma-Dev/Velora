@@ -29,7 +29,6 @@ backend/
       fit.py             Fit confidence engine (port of frontend fit.js)
   database/
     schema.sql           DDL: tables, indexes, SQL functions
-    init.sql             Reproducible schema initialization
   scripts/
     seed_catalogue.py    Idempotent catalogue seed from frontend catalog.js
     extract_catalog.mjs  Extract sellers/categories/raw from catalog.js
